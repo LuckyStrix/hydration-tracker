@@ -178,6 +178,16 @@ quietly wrong, which is worse. So:
   names, because both move. Nothing in there may raise into a request.
 - **The first Garmin login needs a human** if MFA is on. `hydration
   garmin-login`, once. A background thread has nobody to ask.
+- **A refused Garmin login backs off; a transient one does not.** They are
+  different problems: a 401 does not fix itself until somebody edits `.env`, and
+  retrying it every fifteen minutes is 96 failed logins a day against Garmin's
+  SSO -- which is how a typo in a password becomes a locked account, caused by
+  us. `AUTH_FAILURE_MARKERS` decides which kind it was, and over-matching is the
+  safe direction.
+- **Credentials are read through `config._credential`**, which trims whitespace
+  and matched outer quotes. A `.env` is edited by hand; a trailing space is
+  invisible in every editor and produces a 401 indistinguishable from a wrong
+  password.
 - **The database lives in a Docker volume, not a bind mount.** SQLite locking is
   unreliable across Docker Desktop's filesystem translation layer, and anything
   watching a host directory will eventually copy the file mid-write. Backups get

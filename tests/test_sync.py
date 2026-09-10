@@ -134,3 +134,84 @@ def test_a_write_back_that_fails_does_not_fail_the_sync(tz_conn, garmin_returns,
     monkeypatch.setattr(garmin, "push_hydration", explode)
 
     assert sync.run_sync_once(tz_conn)["ok"]
+
+
+# -- backing off from a refused login --------------------------------------
+#
+# The important distinction in this file. A network blip fixes itself and is
+# worth retrying soon. A 401 does not -- nothing changes until a person edits
+# `.env` -- and retrying it every fifteen minutes is 96 failed logins a day
+# against Garmin's SSO, which is how a typo in a password becomes a locked
+# account. The app would have caused that.
+
+def _refuse(monkeypatch, message: str):
+    def refuse(interactive=False):
+        raise RuntimeError(message)
+
+    monkeypatch.setattr(garmin, "connect", refuse)
+
+
+def test_a_refused_login_backs_off_hard(tz_conn, monkeypatch):
+    _refuse(monkeypatch, "Garmin login failed: Authentication failed (401 Unauthorized).")
+
+    sync.run_sync_once(tz_conn)
+
+    assert sync.next_attempt_minutes(tz_conn) >= sync.AUTH_BACKOFF_MIN
+    assert sync.sync_status(tz_conn)["auth_failure"]
+
+
+def test_a_transient_failure_retries_on_the_ordinary_interval(tz_conn, monkeypatch):
+    """Garmin having a bad morning is not the same as Garmin refusing us."""
+    _refuse(monkeypatch, "Garmin login failed: connection timed out")
+
+    sync.run_sync_once(tz_conn)
+
+    assert sync.next_attempt_minutes(tz_conn) == config.SYNC_MINUTES
+    assert not sync.sync_status(tz_conn)["auth_failure"]
+
+
+def test_the_backoff_grows_and_is_capped(tz_conn, monkeypatch):
+    _refuse(monkeypatch, "401 Unauthorized")
+
+    waits = []
+    for _ in range(12):
+        sync.run_sync_once(tz_conn)
+        waits.append(sync.next_attempt_minutes(tz_conn))
+
+    assert waits[0] < waits[3], "it grows"
+    assert max(waits) == sync.MAX_BACKOFF_MIN, "and stops growing"
+
+
+def test_being_rate_limited_backs_off_too(tz_conn, monkeypatch):
+    """Garmin says 429 when it has had enough. Retrying on the usual interval
+    is the one response guaranteed to make that worse."""
+    _refuse(monkeypatch, "Too many login attempts. Please wait a few minutes.")
+
+    sync.run_sync_once(tz_conn)
+
+    assert sync.next_attempt_minutes(tz_conn) >= sync.AUTH_BACKOFF_MIN
+
+
+def test_a_success_clears_the_backoff(tz_conn, garmin_returns, monkeypatch):
+    _refuse(monkeypatch, "401 Unauthorized")
+    sync.run_sync_once(tz_conn)
+    assert sync.next_attempt_minutes(tz_conn) > config.SYNC_MINUTES
+
+    # Credentials fixed.
+    monkeypatch.setattr(garmin, "connect", lambda interactive=False: object())
+    sync.run_sync_once(tz_conn)
+
+    assert sync.next_attempt_minutes(tz_conn) == config.SYNC_MINUTES
+    assert sync.sync_status(tz_conn)["failures"] == 0
+
+
+def test_a_multi_factor_prompt_is_not_read_as_bad_credentials(tz_conn, monkeypatch):
+    """It needs a person at the CLI, not an hour's wait -- and the message has
+    to survive to say so."""
+    _refuse(monkeypatch, "Garmin is asking for a multi-factor code, which a background "
+                         "sync cannot answer. Run: hydration garmin-login")
+
+    result = sync.run_sync_once(tz_conn)
+
+    assert "garmin-login" in result["message"]
+    assert not sync.sync_status(tz_conn)["auth_failure"]

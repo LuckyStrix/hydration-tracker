@@ -166,6 +166,26 @@ docker compose exec hydration hydration garmin-login
 The cached tokens refresh themselves indefinitely after that. If a sync fails,
 the Settings page says why rather than failing silently.
 
+**If you get a 401 from Garmin**, in order of likelihood:
+
+- `GARMIN_EMAIL` is your Garmin **display username** rather than the email
+  address the account was registered with. Garmin refuses a username with
+  exactly this error and no hint that that is the problem.
+- A stray space or a quote around a value in `.env`. Both are trimmed now, but
+  a `#` in an unquoted password is still truncated by some parsers — quote it.
+- The password is genuinely wrong, or the account is locked. Sign in at
+  [connect.garmin.com](https://connect.garmin.com) to tell those apart.
+- Multi-factor is on and this is the first login. Run `hydration garmin-login`.
+
+After editing `.env`, run `docker compose up -d` rather than `restart` — a
+restart reuses the container's existing environment and your change will not
+take effect, which looks exactly like the credentials still being wrong.
+
+A refused login backs off — an hour, then longer, up to six hours — instead of
+retrying on the usual interval. Ninety-six failed logins a day is how an
+account gets locked, and that would be a worse problem than the typo that
+started it. **Sync now** on the Settings page ignores the backoff.
+
 This uses the unofficial `garminconnect` client, because Garmin has no public
 API for an individual. It talks to the same endpoints the phone app uses, which
 works well but is somebody else's private interface — so every call is written to

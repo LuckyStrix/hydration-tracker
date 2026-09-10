@@ -28,6 +28,30 @@ LAST_RUN = "sync.last_run"
 LAST_OK = "sync.last_ok"
 LAST_ERROR = "sync.last_error"
 CURSOR = "sync.garmin_cursor"
+FAILURES = "sync.consecutive_failures"
+
+MAX_BACKOFF_MIN = 360.0
+"""Six hours. Far enough apart that a broken sync costs nothing, close enough
+that a fixed one is picked up the same day."""
+
+AUTH_BACKOFF_MIN = 60.0
+"""Where the backoff *starts* when Garmin refused the credentials rather than
+failing to answer.
+
+The two are different problems. A network blip fixes itself and is worth
+retrying soon. A 401 does not fix itself -- nothing changes until a person
+edits `.env` -- and retrying it on the ordinary interval means 96 failed login
+attempts a day against Garmin's SSO, which is how a typo in a password turns
+into a locked account. That is a considerably worse problem than the typo, and
+the app would have caused it."""
+
+AUTH_FAILURE_MARKERS = (
+    "401", "unauthorized", "authentication failed", "invalid", "credential",
+    "429", "too many", "locked",
+)
+"""Matched against the message, because the client raises its own exception
+types and those move between releases. Over-matching is the safe direction: the
+cost is waiting an hour to retry something that would have worked."""
 
 _thread: threading.Thread | None = None
 _stop = threading.Event()
@@ -121,6 +145,7 @@ def run_sync_once(connection: sqlite3.Connection, *, interactive: bool = False) 
             db.set_setting(connection, CURSOR, db.to_iso(now))
             db.set_setting(connection, LAST_OK, db.to_iso(now))
             db.set_setting(connection, LAST_ERROR, None)
+            db.set_setting(connection, FAILURES, "0")
 
     message = f"Synced {added} activities and {weights} new weigh-ins."
     if failed:
@@ -176,11 +201,42 @@ def _weight_already_recorded(connection: sqlite3.Connection, moment: datetime) -
     return row is not None
 
 
+def _is_auth_failure(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in AUTH_FAILURE_MARKERS)
+
+
 def _record_failure(connection: sqlite3.Connection, message: str) -> dict:
     log.info("garmin sync unavailable: %s", message)
+    failures = _failure_count(connection) + 1
     with db.transaction(connection):
         db.set_setting(connection, LAST_ERROR, message)
-    return {"ok": False, "message": message}
+        db.set_setting(connection, FAILURES, str(failures))
+    return {"ok": False, "message": message, "failures": failures}
+
+
+def _failure_count(connection: sqlite3.Connection) -> int:
+    try:
+        return max(0, int(db.get_setting(connection, FAILURES) or 0))
+    except ValueError:
+        return 0
+
+
+def next_attempt_minutes(connection: sqlite3.Connection) -> float:
+    """How long to wait before trying Garmin again.
+
+    Exponential in the number of consecutive failures, and starting much higher
+    when the failure was Garmin refusing the credentials -- see
+    AUTH_BACKOFF_MIN for why that distinction is the important one.
+    """
+    failures = _failure_count(connection)
+    if failures == 0:
+        return float(config.SYNC_MINUTES)
+
+    base = config.SYNC_MINUTES
+    if _is_auth_failure(db.get_setting(connection, LAST_ERROR) or ""):
+        base = max(base, AUTH_BACKOFF_MIN)
+    return min(base * 2 ** (failures - 1), MAX_BACKOFF_MIN)
 
 
 def sync_status(connection: sqlite3.Connection) -> dict:
@@ -190,6 +246,9 @@ def sync_status(connection: sqlite3.Connection) -> dict:
         "last_run": db.get_setting(connection, LAST_RUN),
         "last_ok": db.get_setting(connection, LAST_OK),
         "last_error": db.get_setting(connection, LAST_ERROR),
+        "failures": _failure_count(connection),
+        "auth_failure": _is_auth_failure(db.get_setting(connection, LAST_ERROR) or ""),
+        "retry_in_min": next_attempt_minutes(connection) if _failure_count(connection) else None,
         "running": _thread is not None and _thread.is_alive(),
     }
 
@@ -212,7 +271,14 @@ def _loop() -> None:
             # net, and it exists so the thread cannot die and leave sync
             # silently switched off for as long as the container runs.
             log.exception("sync loop caught an unexpected error")
-        _stop.wait(config.SYNC_MINUTES * 60)
+
+        wait_min = next_attempt_minutes(connection)
+        if wait_min > config.SYNC_MINUTES:
+            log.info("backing off; next garmin attempt in %.0f min", wait_min)
+        # "Sync now" on the settings page and `hydration sync` both call
+        # run_sync_once directly, so a person who has just fixed their
+        # credentials never has to wait this out.
+        _stop.wait(wait_min * 60)
 
 
 def start_sync() -> None:

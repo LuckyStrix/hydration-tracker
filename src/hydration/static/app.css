@@ -389,3 +389,8 @@ footer.foot {
 .status-unknown { color: var(--ink-muted); border-color: var(--ink-muted); }
 input[type="file"] { font: inherit; font-size: 14px; color: var(--ink-2); }
 label.field input[type="checkbox"] { width: auto; margin-right: 6px; }
+
+/* The Garmin client's failure messages are deliberately multi-line -- they
+   enumerate the causes of a 401 -- and collapsing them into one paragraph
+   throws away the only useful thing about them. */
+.preserve-lines { white-space: pre-line; }

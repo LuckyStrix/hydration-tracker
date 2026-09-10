@@ -18,6 +18,27 @@ def _flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _credential(name: str) -> str | None:
+    """An environment value as a person actually typed it into a `.env` file.
+
+    Trims whitespace, and strips one matched pair of surrounding quotes. Docker
+    Compose does the latter itself these days; `docker run -e` and older
+    Compose do not, and the resulting credential fails in a way that names no
+    cause at all.
+
+    The trade is that a credential which genuinely begins and ends with the
+    same quote character loses them. That is a much rarer thing than a stray
+    space, and unlike a stray space it is visible in the file.
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    value = raw.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1]
+    return value or None
+
+
 def _number(name: str, default: float) -> float:
     raw = os.environ.get(name)
     try:
@@ -74,8 +95,18 @@ restored, with a 413 that named nothing useful."""
 
 # -- garmin ----------------------------------------------------------------
 
-GARMIN_EMAIL = os.environ.get("GARMIN_EMAIL")
-GARMIN_PASSWORD = os.environ.get("GARMIN_PASSWORD")
+GARMIN_EMAIL = _credential("GARMIN_EMAIL")
+GARMIN_PASSWORD = _credential("GARMIN_PASSWORD")
+"""Garmin wants the **email address** the account was registered with, not the
+display username -- a username gets a 401 that says nothing about why.
+
+Both are read through `_credential`, which trims whitespace and matched
+surrounding quotes. Neither is paranoia: a `.env` file is edited by hand, a
+trailing space is invisible in every editor, and `GARMIN_PASSWORD="hunter2"` is
+what a person writes when the password has a space in it. Passing either
+through verbatim produces a 401 from Garmin that looks exactly like a wrong
+password, and the sync then retries it every fifteen minutes until Garmin locks
+the account."""
 GARMIN_TOKEN_DIR = Path(os.environ.get("HYDRATION_GARMIN_TOKENS", str(DATA_DIR / "garmin_tokens")))
 
 SYNC_MINUTES = int(_number("HYDRATION_SYNC_MINUTES", 15))

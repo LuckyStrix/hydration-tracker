@@ -141,7 +141,28 @@
       {% if sync.last_ok %}Last success {{ sync.last_ok | ago }}.{% else %}No successful sync yet.{% endif %}
     </p>
     {% if sync.last_error %}
-      <div class="flag"><strong>Last sync failed.</strong> {{ sync.last_error }}</div>
+      <div class="flag">
+        <strong>Last sync failed{% if sync.failures > 1 %}, {{ sync.failures }} times running{% endif %}.</strong>
+        <span class="preserve-lines">{{ sync.last_error }}</span>
+      </div>
+      {% if sync.auth_failure %}
+      <p class="small muted">
+        Garmin refused the credentials, so the sync is backing off rather than retrying every
+        {{ sync.interval_min }} minutes &mdash; repeated failed logins are how an account gets
+        locked.{% if sync.retry_in_min %} Next automatic attempt in about
+        {{ sync.retry_in_min | round | int }} minutes;{% endif %} &ldquo;Sync now&rdquo; below
+        ignores that and tries immediately.
+      </p>
+      <ul class="small muted">
+        <li><code>GARMIN_EMAIL</code> must be the <strong>email address</strong> the account was
+          registered with, not your Garmin display username. A username gets exactly this error.</li>
+        <li>Check for stray spaces or quotes around either value in <code>.env</code>, then
+          <code>docker compose up -d</code> &mdash; a changed <code>.env</code> needs a recreate,
+          not a restart.</li>
+        <li>Sign in at <a href="https://connect.garmin.com">connect.garmin.com</a> to confirm the
+          password works and the account is not locked.</li>
+      </ul>
+      {% endif %}
       <p class="small muted">
         If it mentions a multi-factor code, run this once and it will not ask again:
         <code>docker compose exec hydration hydration garmin-login</code>
