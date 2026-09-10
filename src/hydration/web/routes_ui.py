@@ -14,9 +14,62 @@ from . import deps
 
 router = APIRouter()
 
-QUICK_VOLUMES_L = (0.25, 0.35, 0.5, 0.75, 1.0)
+BOTTLE_L = round(units.fl_oz_to_ml(26.0) / units.ML_PER_L, 3)
+"""The water bottle, in the litres the form posts. Rounded to the millilitre:
+the trailing digits of the ounce conversion are precision a bottle does not
+have, and the form would post every one of them."""
+
+QUICK_DRINKS = (
+    {"litres": 0.25, "label": "0.25 L"},
+    {"litres": 0.35, "label": "0.35 L"},
+    {"litres": 0.5, "label": "0.50 L"},
+    {"litres": BOTTLE_L, "label": f"Bottle ({BOTTLE_L:.2f} L)"},
+    {"litres": 1.0, "label": "1.00 L"},
+)
 """The quick-log buttons. Litres, because that is what was asked for, and a
-short list because a long one is slower to use than typing."""
+short list because a long one is slower to use than typing. The bottle is
+named rather than measured: nobody fills 0.77 L, they finish the bottle. It
+displaces the old 0.75 button, which it sits 19 mL away from -- two buttons
+that close together are a misclick, not a choice."""
+
+
+DRINK_DEFAULT_ML = 350.0
+MEAL_WATER_DEFAULT_ML = 300.0
+MAX_ENTRY_ML = 5000.0
+"""A single drink above five litres is a typo -- most likely ounces typed into
+a box reading litres. Checked here rather than by the input's `max`, which the
+browser applies against whichever unit the box happened to load with."""
+
+MAX_SWEAT_ENTRY_ML = 12000.0
+"""Sweat gets its own ceiling. A long day in the heat genuinely reaches six or
+seven litres, and refusing a real number because it would be an absurd drink is
+how a hand-logged ultra gets thrown away."""
+
+
+def _entry_default(ml: float, unit: str) -> str:
+    """A starting amount, written the way that unit is written.
+
+    Ounces to the whole number: nobody pours 11.83 of them, and a default that
+    precise reads as a measurement rather than a suggestion.
+    """
+    amount = units.volume_from_ml(ml, unit)
+    return f"{amount:.0f}" if unit == "oz" else f"{amount:.2f}"
+
+
+def _volume_ml(raw: str, unit: str, *, what: str, ceiling: float = MAX_ENTRY_ML) -> float | None:
+    """A typed amount and its unit, as millilitres. None if the box was blank."""
+    amount = units.parse_optional_float(raw)
+    if amount is None:
+        return None
+    millilitres = units.volume_to_ml(amount, unit)
+    if millilitres <= 0:
+        raise ValidationError(f"{what} has to be more than nothing")
+    if millilitres > ceiling:
+        raise ValidationError(
+            f"{units.format_l(millilitres)} in one go is more than this will take -- "
+            f"is that {unit} or the other one?"
+        )
+    return millilitres
 
 
 @router.get("/healthz")
@@ -49,7 +102,8 @@ def today(request: Request):
         profile=timeline.profile,
         entries=entries,
         beverages=service.list_beverages(conn),
-        quick_volumes=QUICK_VOLUMES_L,
+        quick_drinks=QUICK_DRINKS,
+        drink_default=_entry_default(DRINK_DEFAULT_ML, deps.entry_unit(conn)),
         deficit_chart=charts.deficit_chart(
             timeline, timeline.corrections, tz, body_mass_kg=timeline.profile.body_mass_kg
         ),
@@ -93,7 +147,9 @@ def log_page(request: Request):
         request,
         "log.html",
         beverages=service.list_beverages(conn),
-        quick_volumes=QUICK_VOLUMES_L,
+        quick_drinks=QUICK_DRINKS,
+        drink_default=_entry_default(DRINK_DEFAULT_ML, deps.entry_unit(conn)),
+        meal_water_default=_entry_default(MEAL_WATER_DEFAULT_ML, deps.entry_unit(conn)),
         colours=range(1, 9),
         now_local=datetime.now(deps.profile_timezone(conn)).strftime("%Y-%m-%dT%H:%M"),
     )
@@ -119,25 +175,26 @@ def _parse_local(raw: str | None, tz) -> datetime | None:
 def log_drink(
     request: Request,
     beverage: str = Form(...),
-    volume_l: str = Form(...),
+    volume: str = Form(...),
+    volume_unit: str = Form("l"),
     at: str = Form(""),
     sodium_mg: str = Form(""),
     note: str = Form(""),
 ):
     conn = deps.connection()
-    litres = units.parse_optional_float(volume_l)
-    if litres is None:
+    millilitres = _volume_ml(volume, volume_unit, what="a drink")
+    if millilitres is None:
         raise ValidationError("how much did you drink?")
     service.log_intake(
         conn,
         beverage=beverage,
-        volume_ml=litres * 1000.0,
+        volume_ml=millilitres,
         at=_parse_local(at, deps.profile_timezone(conn)),
         sodium_mg=units.parse_optional_float(sodium_mg),
         note=note.strip() or None,
     )
     return deps.redirect(deps.safe_path(request.headers.get("referer", "/").rsplit(request.base_url.netloc, 1)[-1] or "/"),
-                         f"Logged {litres:.2f} L of {beverage.lower()}.", "good")
+                         f"Logged {units.format_l(millilitres)} of {beverage.lower()}.", "good")
 
 
 @router.post("/log/void")
@@ -145,21 +202,21 @@ def log_void(
     request: Request,
     colour: int = Form(...),
     at: str = Form(""),
-    volume_l: str = Form(""),
+    volume: str = Form(""),
+    volume_unit: str = Form("l"),
     urgency: str = Form(""),
     note: str = Form(""),
 ):
     conn = deps.connection()
-    litres = units.parse_optional_float(volume_l)
     service.log_void(
         conn,
         colour=colour,
         at=_parse_local(at, deps.profile_timezone(conn)),
-        volume_ml=litres * 1000.0 if litres else None,
+        volume_ml=_volume_ml(volume, volume_unit, what="a reading"),
         urgency=int(urgency) if urgency else None,
         note=note.strip() or None,
     )
-    return deps.redirect("/", f"Logged a void at colour {colour}.", "good")
+    return deps.redirect("/", f"Logged colour {colour}.", "good")
 
 
 @router.post("/log/weight")
@@ -192,14 +249,14 @@ def log_symptom(request: Request, kind: str = Form(...), severity: int = Form(2)
 def log_meal(
     request: Request,
     label: str = Form(""),
-    water_l: str = Form(""),
+    water: str = Form(""),
+    water_unit: str = Form("l"),
     sodium_mg: str = Form(""),
 ):
-    litres = units.parse_optional_float(water_l) or 0.0
     service.log_meal(
         deps.connection(),
         label=label.strip() or None,
-        water_ml=litres * 1000.0,
+        water_ml=_volume_ml(water, water_unit, what="a meal") or 0.0,
         sodium_mg=units.parse_optional_float(sodium_mg) or 0.0,
     )
     return deps.redirect("/", "Logged a meal.", "good")
@@ -212,13 +269,14 @@ def log_activity(
     at: str = Form(...),
     duration_min: float = Form(...),
     kcal: str = Form(""),
-    sweat_l: str = Form(""),
+    sweat: str = Form(""),
+    sweat_unit: str = Form("l"),
 ):
     conn = deps.connection()
     started = _parse_local(at, deps.profile_timezone(conn))
     if started is None:
         raise ValidationError("when did it start?")
-    sweat_litres = units.parse_optional_float(sweat_l)
+    sweat_ml = _volume_ml(sweat, sweat_unit, what="a session's sweat", ceiling=MAX_SWEAT_ENTRY_ML)
     # Not `record_activity` directly: a hand-logged session is the one path
     # with no sync run behind it to re-fit the calibration afterwards.
     service.log_manual_activity(
@@ -227,7 +285,7 @@ def log_activity(
         duration_s=duration_min * 60.0,
         name=name.strip() or None,
         kcal=units.parse_optional_float(kcal),
-        sweat_ml_reported=sweat_litres * 1000.0 if sweat_litres else None,
+        sweat_ml_reported=sweat_ml,
     )
     return deps.redirect("/activities", "Activity recorded.", "good")
 

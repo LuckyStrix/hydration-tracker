@@ -57,6 +57,13 @@ CREATE TABLE IF NOT EXISTS profile (
     default_temp_c          REAL    NOT NULL DEFAULT 21.0,
     default_humidity_pct    REAL    NOT NULL DEFAULT 45.0,
 
+    -- Which unit the entry boxes start in, 'l' or 'oz'. Entry only: storage
+    -- is millilitres and the display is litres either way. No CHECK, because
+    -- ALTER TABLE ADD COLUMN carries constraints unevenly and a fresh database
+    -- differing from a migrated one is worse than validating in one function
+    -- (`units.volume_to_ml`, which every entry path goes through).
+    volume_entry_unit       TEXT    NOT NULL DEFAULT 'l',
+
     created_at              TEXT    NOT NULL,
     updated_at              TEXT    NOT NULL
 );

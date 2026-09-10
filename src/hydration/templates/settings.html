@@ -65,9 +65,22 @@
     </div>
 
     <div class="row">
+      <label class="field"><span>Type fluid amounts in</span>
+        <select name="volume_entry_unit">
+          <option value="l"{% if row['volume_entry_unit'] == 'l' %} selected{% endif %}>Litres</option>
+          <option value="oz"{% if row['volume_entry_unit'] == 'oz' %} selected{% endif %}>Fluid ounces</option>
+        </select>
+        <span class="small muted">
+          Which unit every amount box starts in. Either one is available on the box itself;
+          this is only what it opens as. Stored and displayed in litres either way.
+        </span>
+      </label>
+    </div>
+
+    <div class="row">
       <label class="field"><span>Absorption cap, mL/h</span>
         <input type="number" name="absorption_cap_ml_h" step="50" min="200" max="1600" value="{{ row['absorption_cap_ml_h'] }}"></label>
-      <label class="field"><span>How far to trust urine colour (0&ndash;1)</span>
+      <label class="field"><span>How far to trust a colour reading (0&ndash;1)</span>
         <input type="number" name="trust_urine" step="0.05" min="0" max="1" value="{{ row['trust_urine'] }}"></label>
     </div>
 
@@ -76,7 +89,7 @@
         <input type="number" name="food_water_ml_day" step="50" min="0" max="2500" value="{{ row['food_water_ml_day'] | round | int }}">
         <span class="small muted">Used only on days with no meals logged; a logged meal wins.</span>
       </label>
-      <label class="field"><span>Does caffeine make you go?</span>
+      <label class="field"><span>How much does caffeine dry you out?</span>
         <select name="caffeine_diuresis_ml_mg">
           {% for option in caffeine_options %}
           <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>
@@ -93,7 +106,7 @@
 <div class="card">
   <h2>Home Assistant</h2>
   <p class="sub">
-    Tokens for the REST commands. Post drinks, voids, weights and your temperature and
+    Tokens for the REST commands. Post drinks, colour checks, weights and your temperature and
     humidity sensors; poll <code>/api/v1/status</code> for the one-line plan.
     The ready-made package is in <code>hass/packages/hydration.yaml</code>.
   </p>

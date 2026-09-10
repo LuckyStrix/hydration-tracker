@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import csrf, colour_picker, entry_row %}
+{% from "_macros.html" import csrf, colour_picker, entry_row, volume_field %}
 {% block title %}Today &middot; Hydration{% endblock %}
 {% block head %}
 {# No JS available to poll, so the page refreshes itself. Two minutes is long
@@ -88,12 +88,13 @@
   <div class="grid-2">
     <div>
       <div class="quick">
-        {% for litres in quick_volumes %}
+        {% for drink in quick_drinks %}
         <form method="post" action="/log/drink">
           {{ csrf(csrf_token) }}
           <input type="hidden" name="beverage" value="Water">
-          <input type="hidden" name="volume_l" value="{{ litres }}">
-          <button type="submit">{{ "%.2f"|format(litres) }} L</button>
+          <input type="hidden" name="volume" value="{{ drink.litres }}">
+          <input type="hidden" name="volume_unit" value="l">
+          <button type="submit">{{ drink.label }}</button>
         </form>
         {% endfor %}
       </div>
@@ -107,21 +108,25 @@
           </select>
         </label>
         <div class="row">
-          <label class="field"><span>Litres</span>
-            <input type="number" name="volume_l" step="0.05" min="0.05" max="5" value="0.35" required>
-          </label>
+          {{ volume_field("Amount", "volume", entry_unit, value=drink_default, required=true) }}
           <div><button type="submit" class="primary">Log drink</button></div>
         </div>
       </form>
     </div>
 
     <div>
-      <form method="post" action="/log/void">
-        {{ csrf(csrf_token) }}
-        <label class="field"><span>Bathroom &mdash; colour from the chart</span></label>
-        {{ colour_picker() }}
-        <button type="submit" class="primary">Log void</button>
-      </form>
+      {# Folded away, and named for what is read rather than what is read from.
+         This page is the one somebody else glances at over a shoulder, and a
+         row of amber swatches announces itself from across a room. <details>
+         is the only collapse available with no JavaScript. #}
+      <details class="discreet">
+        <summary>Colour check</summary>
+        <form method="post" action="/log/void">
+          {{ csrf(csrf_token) }}
+          {{ colour_picker() }}
+          <button type="submit" class="primary">Save reading</button>
+        </form>
+      </details>
     </div>
   </div>
 </div>

@@ -9,6 +9,8 @@ fails if the walk stops seeing the application.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -141,14 +143,14 @@ def test_the_pages_contain_no_script_at_all(signed_in):
 # -- csrf ------------------------------------------------------------------
 
 def test_a_post_without_a_csrf_token_is_refused(signed_in):
-    response = signed_in.post("/log/drink", data={"beverage": "Water", "volume_l": "0.5"})
+    response = signed_in.post("/log/drink", data={"beverage": "Water", "volume": "0.5"})
     assert response.status_code == 403
 
 
 def test_a_post_with_the_csrf_token_is_accepted(signed_in):
     response = signed_in.post(
         "/log/drink",
-        data={"beverage": "Water", "volume_l": "0.5", "csrf_token": _csrf(signed_in)},
+        data={"beverage": "Water", "volume": "0.5", "csrf_token": _csrf(signed_in)},
     )
     assert response.status_code == 303
     assert deps.connection().execute("SELECT count(*) FROM intake").fetchone()[0] == 1
@@ -160,7 +162,7 @@ def test_csrf_middleware_does_not_eat_the_request_body(signed_in):
     and every field arrives as missing."""
     signed_in.post(
         "/log/drink",
-        data={"beverage": "Water", "volume_l": "0.75", "csrf_token": _csrf(signed_in)},
+        data={"beverage": "Water", "volume": "0.75", "csrf_token": _csrf(signed_in)},
     )
     volume = deps.connection().execute("SELECT volume_ml FROM intake").fetchone()[0]
     assert volume == 750.0, "the route did not receive the posted body"
@@ -262,10 +264,84 @@ def test_the_pages_render_with_real_data(signed_in, client, token):
 
     body = signed_in.get("/history?days=7").text
     assert "<svg" in body
-    assert "Urine colour" in body
+    assert "Colour readings" in body
 
     today = signed_in.get("/").text
     assert "<svg" in today
+
+
+def test_the_pages_read_as_a_hydration_tracker_and_nothing_else(signed_in, client, token):
+    """Somebody glancing at the screen should see hydration.
+
+    The words are half of it and the swatches are the other half: a row of
+    amber blocks says what it is from across a room whatever the heading above
+    it reads. So every page is checked for the vocabulary, and the two places
+    that draw the colour scale are checked for being folded shut. The chart
+    needs data to draw a scale at all, hence the posts.
+    """
+    for colour in (3, 5):
+        client.post("/api/v1/void", json={"colour": colour}, headers=_auth(token))
+
+    for path in ("/", "/log", "/history", "/activities", "/insights", "/settings"):
+        # The rendered words, not the markup: `/log/void` is a form action and
+        # a form action is not on the screen.
+        words = re.sub(r"<[^>]+>", " ", signed_in.get(path).text).lower()
+        for word in ("urine", "bathroom", "void"):
+            assert word not in words, f"{path} says {word!r}"
+
+    for path, marker in (("/", "swatch-row"), ("/history", "urine-swatch")):
+        body = signed_in.get(path).text
+        before, _, _ = body.partition(marker)
+        assert marker in body, f"{path} no longer draws the colour scale"
+        opened = before.rfind("<details")
+        assert opened != -1, f"{path} shows the colour scale outside a <details>"
+        assert "</details>" not in before[opened:], f"{path} closes the <details> too early"
+        assert "open" not in before[opened:before.index(">", opened)], f"{path} starts unfolded"
+
+
+def test_an_amount_can_be_typed_in_ounces(signed_in):
+    """26 oz is the bottle, and it has to arrive as 769 mL rather than 26 L."""
+    signed_in.post(
+        "/log/drink",
+        data={"csrf_token": _csrf(signed_in), "beverage": "Water",
+              "volume": "26", "volume_unit": "oz"},
+    )
+    stored = deps.connection().execute("SELECT volume_ml FROM intake").fetchone()[0]
+    assert round(stored) == 769
+
+
+def test_an_amount_in_the_wrong_unit_is_refused_rather_than_stored(signed_in):
+    """The input's own `max` cannot do this: it is applied against whichever
+    unit the box loaded with, and the select can be changed after that."""
+    response = signed_in.post(
+        "/log/drink",
+        data={"csrf_token": _csrf(signed_in), "beverage": "Water",
+              "volume": "26", "volume_unit": "l"},
+        follow_redirects=True,
+    )
+    assert "more than this will take" in response.text
+    assert deps.connection().execute("SELECT count(*) FROM intake").fetchone()[0] == 0
+
+
+def test_the_entry_boxes_open_in_the_unit_the_profile_asked_for(signed_in):
+    """Otherwise the preference is a setting that changes nothing: somebody who
+    thinks in ounces would still switch the select on every single entry."""
+    signed_in.post("/settings/profile", data={
+        "csrf_token": _csrf(signed_in), "mass_lb": "170", "height_cm": "178",
+        "birth_year": "1995", "timezone_name": "America/New_York",
+        "volume_entry_unit": "oz",
+    })
+    for path in ("/", "/log"):
+        body = signed_in.get(path).text
+        assert '<option value="oz" selected>oz</option>' in body, path
+    assert 'value="12"' in signed_in.get("/log").text, "the default amount is not in ounces"
+
+
+def test_the_quick_buttons_offer_the_bottle(signed_in):
+    """26 fl oz, converted once in units.py and rounded to the millilitre."""
+    body = signed_in.get("/").text
+    assert "Bottle (0.77 L)" in body
+    assert 'value="0.769"' in body
 
 
 # -- authentication flow ---------------------------------------------------
@@ -442,7 +518,7 @@ def test_an_ordinary_form_is_still_held_to_the_small_limit(signed_in, monkeypatc
     monkeypatch.setattr(config, "MAX_BODY_BYTES", 512)
     response = signed_in.post(
         "/log/drink",
-        data={"csrf_token": _csrf(signed_in), "beverage": "Water", "volume_l": "0.5", "note": "x" * 2000},
+        data={"csrf_token": _csrf(signed_in), "beverage": "Water", "volume": "0.5", "note": "x" * 2000},
     )
     assert response.status_code == 413
     assert "512" in response.text or "kB" in response.text, "the refusal names the limit"
@@ -452,7 +528,7 @@ def test_the_same_form_is_accepted_when_it_is_not_oversized(signed_in):
     """So the test above is measuring the limit, not a malformed request."""
     response = signed_in.post(
         "/log/drink",
-        data={"csrf_token": _csrf(signed_in), "beverage": "Water", "volume_l": "0.5", "note": "ok"},
+        data={"csrf_token": _csrf(signed_in), "beverage": "Water", "volume": "0.5", "note": "ok"},
     )
     assert response.status_code == 303
     assert deps.connection().execute("SELECT count(*) FROM intake").fetchone()[0] == 1

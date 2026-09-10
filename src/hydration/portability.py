@@ -289,7 +289,7 @@ PROFILE_IMPORTABLE = {
     "wake_hour", "bed_hour", "sweat_sodium_mmol_l", "sweat_calibration",
     "sweat_calibration_n", "baseline_loss_scale", "feedback_n", "absorption_cap_ml_h",
     "food_water_ml_day", "caffeine_diuresis_ml_mg", "trust_urine",
-    "default_temp_c", "default_humidity_pct",
+    "default_temp_c", "default_humidity_pct", "volume_entry_unit",
 }
 
 

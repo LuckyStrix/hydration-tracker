@@ -137,8 +137,8 @@ this is the single most useful thing to get right for electrolyte advice."""
 CAFFEINE_SENSITIVITY = (
     (0.0, "No noticeable effect", "The usual case, and the default. Habitual drinkers show no "
                                  "meaningful net loss, and coffee hydrates about as well as water."),
-    (0.5, "Noticeable", "A third coffee sends you to the bathroom sooner and more than the "
-                        "volume you drank explains."),
+    (0.5, "Noticeable", "A third coffee costs you more fluid than the volume you drank "
+                        "explains."),
     (1.0, "Strong", "Caffeine is clearly a diuretic for you, and a heavy morning leaves you dry "
                     "by lunchtime."),
 )
@@ -181,10 +181,13 @@ def save_profile(
     caffeine_diuresis_ml_mg: float = Form(0.0),
     default_temp_f: str = Form("70"),
     default_humidity_pct: float = Form(45.0),
+    volume_entry_unit: str = Form("l"),
 ):
     pounds = units.parse_optional_float(mass_lb)
     if pounds is None:
         raise ValidationError("body weight is needed -- the whole model is scaled by it")
+    if volume_entry_unit not in units.VOLUME_UNITS:
+        raise ValidationError(f"{volume_entry_unit!r} is not a fluid unit this app knows")
     service.save_profile(
         deps.connection(),
         display_name=display_name.strip() or "me",
@@ -202,6 +205,7 @@ def save_profile(
         caffeine_diuresis_ml_mg=caffeine_diuresis_ml_mg,
         default_temp_c=units.f_to_c(units.parse_optional_float(default_temp_f) or 70.0),
         default_humidity_pct=default_humidity_pct,
+        volume_entry_unit=volume_entry_unit,
     )
     return deps.redirect("/settings", "Profile saved.", "good")
 

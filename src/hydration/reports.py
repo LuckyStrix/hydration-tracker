@@ -259,7 +259,7 @@ def model_bias(connection: sqlite3.Connection, days: int = 30) -> dict:
             if abs(mean) < 250
             else (
                 f"The ledger reads about {abs(mean) / 1000:.2f} L {'drier' if mean > 0 else 'wetter'} "
-                f"than urine and weight suggest. Persistent bias in one direction means a model "
+                f"than colour and weight suggest. Persistent bias in one direction means a model "
                 f"constant does not suit you -- see docs/tuning.md."
             )
         ),

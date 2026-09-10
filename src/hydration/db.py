@@ -165,6 +165,7 @@ MIGRATIONS: tuple[tuple[str, str, str, str | None], ...] = (
          WHERE ended_at IS NULL OR ended_at = ''
         """,
     ),
+    ("profile", "volume_entry_unit", "TEXT NOT NULL DEFAULT 'l'", None),
 )
 
 
