@@ -189,6 +189,40 @@
 </div>
 
 <div class="card">
+  <h2>Your data</h2>
+  <p class="sub">
+    Everything the model uses, in a form you can read elsewhere and put back. API tokens and
+    the password are deliberately left out &mdash; an export is a file that gets emailed
+    around, and it must not be a way in.
+  </p>
+  <div class="quick">
+    <a class="button" href="/export/hydration.json">Download JSON</a>
+    <a class="button" href="/export/entries.csv">Download CSV</a>
+  </div>
+  <p class="small muted">
+    JSON is complete and reversible. CSV is one flat table of everything you logged, for a
+    spreadsheet &mdash; lossy on purpose.
+  </p>
+
+  <h2>Import</h2>
+  <form method="post" action="/import" enctype="multipart/form-data">
+    {{ csrf(csrf_token) }}
+    <label class="field"><span>An exported .json file</span>
+      <input type="file" name="file" accept="application/json,.json" required>
+    </label>
+    <label class="field">
+      <input type="checkbox" name="restore_profile" value="1">
+      Also restore the profile (weight, timezone, fitted factors)
+    </label>
+    <button type="submit" class="primary">Import</button>
+  </form>
+  <p class="small muted">
+    Merges rather than replaces, and importing the same file twice adds nothing the second
+    time.
+  </p>
+</div>
+
+<div class="card">
   <h2>Password</h2>
   <form method="post" action="/settings/password">
     {{ csrf(csrf_token) }}

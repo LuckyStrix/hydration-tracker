@@ -194,7 +194,96 @@ about, and it stays on by default -- in endurance settings this failure mode
 hurts more people than dehydration does."""
 
 
+# -- running without evidence ----------------------------------------------
+#
+# The failure this block exists to prevent: an unbounded ledger cannot tell
+# "I did not drink" from "I did not log". Left alone it accumulated to nearly
+# 20% of body mass over a fortnight of silence -- a figure nobody survives --
+# and then fired medical warnings about it.
+
+UNLOGGED_GRACE_H = 6.0
+"""How long the ledger keeps taking your logs at face value after the last one.
+
+While you are actively logging, an absence of drinks means you did not drink,
+and the ledger should say so. Past this, the more likely explanation is that
+you stopped logging."""
+
+UNLOGGED_PRIOR_PCT = 0.5
+UNLOGGED_HALFLIFE_H = 12.0
+"""Where the estimate drifts to once there is no evidence, and how fast.
+
+A person with access to water does not passively dehydrate; thirst is a real
+and effective regulator. So in the absence of any evidence the honest prior is
+not "still not drinking" but "probably drinking normally, like everyone else"
+-- a mild everyday deficit of about half a percent. The ledger regresses toward
+that rather than integrating off to infinity.
+
+This is keyed on the last log of *any* kind, not on drinks specifically. If you
+are logging voids and weights but no drinks, that is evidence, and it is
+believed."""
+
+MAX_DEFICIT_PCT = 6.0
+MIN_DEFICIT_PCT = -2.5
+"""Hard bounds, as a backstop rather than a model.
+
+Past roughly 6% of body mass a person is in hospital, not reading a dashboard,
+and past about 2.5% the other way is water intoxication. A ledger reporting
+outside this range has a data problem, and saying so is more useful than
+printing the number."""
+
+OBSERVATION_FRESH_H = 12.0
+OBSERVATION_FAIR_H = 36.0
+"""How recently something must have corrected the ledger for its output to be
+called reliable. Beyond the second figure the app should say it does not know
+rather than answer confidently."""
+
+
+# -- subjective feedback ---------------------------------------------------
+
+FEEDBACK_DEFICIT_PCT = {
+    "waterlogged": -1.0,
+    "a_bit_much": -0.3,
+    "about_right": 0.3,
+    "a_bit_dry": 1.0,
+    "very_dry": 2.0,
+}
+"""How the end-of-day question maps onto a deficit.
+
+'about_right' is +0.3% rather than zero because feeling fine is not the same as
+being perfectly in balance -- a mild everyday deficit is the normal state, and
+anchoring 'fine' at zero would bias the whole fit wet."""
+
+TRUST_FEEDBACK = 0.3
+"""How far one day's impression may move the ledger. Below urine colour, which
+is at least looking at something physical, but above nothing -- you have
+information about your own body that no sensor here can see."""
+
+MIN_FEEDBACK_FOR_FIT = 5
+FEEDBACK_LEARNING_RATE = 0.35
+"""How much of the indicated correction to apply per re-fit.
+
+Not all of it. The ledger being compared against already contains the current
+multiplier, so each re-fit measures the error *remaining* after the last one --
+which makes this a feedback controller, and a controller with unity gain
+oscillates. At full gain a run of identical answers drove the multiplier into
+its own floor: 'a bit dry' six times running, which should raise the baseline,
+pinned it at the minimum instead."""
+BASELINE_SCALE_MIN = 0.7
+BASELINE_SCALE_MAX = 1.4
+"""Bounds on the fitted baseline-loss multiplier. Wide enough to absorb a
+genuinely unusual metabolism, tight enough that a run of grumpy answers cannot
+make the model incoherent."""
+
+
 # -- deficit thresholds ----------------------------------------------------
+
+NO_VOID_FLAG_H = 12.0
+"""How long without passing urine is worth mentioning.
+
+Not eight hours, which is what this used to be: a normal night's sleep is eight
+hours and a slow morning is ten, so the flag fired at breakfast every single
+day. A warning that appears daily is one you stop reading, which costs you the
+one time it means something."""
 
 DEFICIT_PCT_NOTICEABLE = 1.0
 DEFICIT_PCT_SIGNIFICANT = 2.0

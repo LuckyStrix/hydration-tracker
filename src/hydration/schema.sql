@@ -43,6 +43,12 @@ CREATE TABLE IF NOT EXISTS profile (
     sweat_calibration       REAL    NOT NULL DEFAULT 1.0,
     sweat_calibration_n     INTEGER NOT NULL DEFAULT 0,
 
+    -- Fitted from the end-of-day question. Scales insensible loss and
+    -- obligatory urine, so a person whose baseline genuinely runs higher or
+    -- lower than the population average stops being told otherwise every day.
+    baseline_loss_scale     REAL    NOT NULL DEFAULT 1.0,
+    feedback_n              INTEGER NOT NULL DEFAULT 0,
+
     absorption_cap_ml_h     REAL    NOT NULL DEFAULT 800.0,
     food_water_ml_day       REAL    NOT NULL DEFAULT 700.0,
     caffeine_diuresis_ml_mg REAL    NOT NULL DEFAULT 0.0,
@@ -251,6 +257,28 @@ CREATE TABLE IF NOT EXISTS meal (
     voided_reason   TEXT
 );
 CREATE INDEX IF NOT EXISTS meal_at ON meal(at) WHERE voided_at IS NULL;
+
+
+-- How the day actually felt. A third observer alongside urine colour and body
+-- weight, and the only one that can see things no sensor here reaches --
+-- thirst, headache, the particular flatness of being under-hydrated.
+--
+-- One per local day is the intent, but nothing enforces it: changing your mind
+-- at 9pm about how 3pm felt is legitimate, and the later answer is simply
+-- another reading.
+CREATE TABLE IF NOT EXISTS feedback (
+    id              INTEGER PRIMARY KEY,
+    at              TEXT    NOT NULL,
+    verdict         TEXT    NOT NULL
+                            CHECK (verdict IN ('waterlogged', 'a_bit_much', 'about_right',
+                                               'a_bit_dry', 'very_dry')),
+    note            TEXT,
+    source          TEXT    NOT NULL DEFAULT 'web',
+    created_at      TEXT    NOT NULL,
+    voided_at       TEXT,
+    voided_reason   TEXT
+);
+CREATE INDEX IF NOT EXISTS feedback_at ON feedback(at) WHERE voided_at IS NULL;
 
 
 -- What the app told you, and when. Written whenever the headline materially

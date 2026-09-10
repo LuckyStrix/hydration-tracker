@@ -52,6 +52,32 @@
 </div>
 
 <div class="card">
+  <h2>What your own verdicts changed</h2>
+  {% if calibration.feedback_n >= 5 %}
+    <p>
+      From <strong>{{ calibration.feedback_n }}</strong> end-of-day answers, your baseline
+      losses are running at <strong>{{ (calibration.baseline_scale * 100) | round | int }}%</strong>
+      of the population average.
+      {% if calibration.baseline_scale > 1.03 %}
+        You lose more water on an ordinary day than the textbook figure, so the model now
+        expects that and stops telling you otherwise.
+      {% elif calibration.baseline_scale < 0.97 %}
+        You lose less on an ordinary day than the textbook figure, so the model has stopped
+        pushing you to drink for losses you were not having.
+      {% else %}
+        Close enough to the average that nothing needed changing.
+      {% endif %}
+    </p>
+  {% else %}
+    <p class="muted">
+      {{ calibration.feedback_n }} of 5 answers so far. Tell the app how the day felt from the
+      Today page; once there are five it will start moving the baseline rather than just
+      recording them.
+    </p>
+  {% endif %}
+</div>
+
+<div class="card">
   <h2>When you fall behind</h2>
   <p class="sub">
     Average deficit by hour of the day, last 30 days. This is the one that changes

@@ -94,20 +94,30 @@ def daily_summaries(
 def void_points(connection: sqlite3.Connection, start: datetime, end: datetime, tz: ZoneInfo) -> list[dict]:
     """Voids shaped for the colour chart, carrying why each was trusted."""
     events = service.build_events(connection, start - timedelta(hours=12), end)
+
+    # One pass for every void's timing context, then a lookup per row. Deriving
+    # each context separately is O(voids x events) and was the single largest
+    # cost on the history page.
+    readings = {
+        events[index].at: urine_model.read(context)
+        for index, context in B.build_void_contexts(events).items()
+    }
+
     points: list[dict] = []
     for row in connection.execute(
         "SELECT * FROM void WHERE voided_at IS NULL AND at BETWEEN ? AND ? ORDER BY at",
         (db.to_iso(start), db.to_iso(end)),
     ):
         moment = db.from_iso(row["at"])
-        void_event = next(
-            (e for e in events if isinstance(e, B.VoidEvent) and e.at == moment), None
-        )
-        if void_event is None:
-            void_event = B.VoidEvent(
-                at=moment, colour=row["colour"], is_first_morning=bool(row["is_first_morning"])
+        reading = readings.get(moment)
+        if reading is None:
+            # A void the event window did not reach. Read it with no timing
+            # context rather than dropping it off the chart.
+            reading = urine_model.read(
+                urine_model.VoidContext(
+                    colour=row["colour"], at=moment, is_first_morning=bool(row["is_first_morning"])
+                )
             )
-        reading = urine_model.read(B._void_context(events, void_event))
         points.append(
             {
                 "at": moment,

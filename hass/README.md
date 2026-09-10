@@ -38,7 +38,7 @@ back one line telling you what to do.
 |---|---|
 | `sensor.hydration_plan` | The actionable line, e.g. *"Drink 0.35 L now, then 0.25 L every 30 min until 4:15 PM. Add 500 mg sodium."* Everything else is on it as attributes. |
 | `sensor.hydration_deficit` | Litres behind, as a number you can graph. |
-| `sensor.hydration_status` | `ok` / `drink` / `drink_urgent` / `add_sodium` / `slow_down` — for card colours and automation triggers. |
+| `sensor.hydration_status` | `ok` / `drink` / `drink_urgent` / `add_sodium` / `slow_down` / `unknown` — for card colours and automation triggers. `unknown` means there is not enough recent data to answer; check the `confidence` attribute. |
 | `sensor.hydration_drunk_today` | Litres so far today. |
 | `sensor.hydration_sodium_gap` | Sweat sodium not yet replaced, in mg. |
 
@@ -141,5 +141,6 @@ encoding. Units can be given the way you think in them — `volume_l`, `temp_f`,
 | `POST /api/v1/env` | `temp_f`, `humidity`, optional `location`, `at` |
 | `POST /api/v1/symptom` | `kind`, optional `severity`, `at` |
 | `POST /api/v1/meal` | optional `label`, `water_l`, `sodium_mg`, `at` |
+| `POST /api/v1/feel` | `verdict`: one of `waterlogged`, `a_bit_much`, `about_right`, `a_bit_dry`, `very_dry` |
 | `GET /api/v1/status` | — returns the plan |
 | `GET /api/v1/beverages` | — the catalogue, for building a dropdown |

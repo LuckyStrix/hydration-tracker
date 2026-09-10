@@ -35,6 +35,7 @@ where the answer is read.
 | Activities | Garmin, or entered by hand | Sweat loss, calories, conditions |
 | Temperature & humidity | Home Assistant sensors | Drives baseline losses and the sweat estimate. Costs nothing and needs no attention |
 | Meals, symptoms | The log page | Sodium you already ate; cramps and headaches that are often salt, not water |
+| How the day felt | One tap on the Today page | The only reading that sees what no sensor can. A run of them shifts the model's baseline, not just the log |
 
 ## The parts that are not obvious
 
@@ -59,6 +60,15 @@ Drinking large volumes of dilute fluid while not actually in deficit is how
 exercise-associated hyponatraemia happens, and in endurance settings that has
 killed more people than dehydration. That warning is on by default, and it
 replaces the drinking plan rather than sitting beside it.
+
+**It knows the difference between "you did not drink" and "you did not log".**
+This is the failure that sinks most self-tracking: a ledger left to integrate on
+its own responded to a week away by reporting a deficit nobody could survive, and
+then raised medical warnings about it. Six hours after the last entry the
+estimate stops accumulating and relaxes toward an ordinary day — because a person
+with access to water does not passively dehydrate — while a synced ride is still
+believed, because sweat is real whether or not anyone was logging. When it is
+running on a guess it says so, and it stops raising flags it cannot support.
 
 **It tells you when it is wrong about you.** The Insights page shows how far the
 ledger sits from what your own readings said, and after four weighed sessions it
@@ -176,6 +186,17 @@ There is no JavaScript anywhere, and the CSP has `script-src 'none'`. Charts are
 server-rendered SVG; every control is a form. The pages work with scripting
 disabled and print correctly.
 
+## Your data stays yours
+
+Export the whole log as **JSON** (complete and reversible) or **CSV** (one flat
+table for a spreadsheet), and import it back on another machine. Importing the
+same file twice adds nothing the second time, so pulling your history across is
+safe to repeat.
+
+API tokens, the password hash and the CSRF key are deliberately excluded. An
+export is a file that gets emailed and left in cloud storage; it must not be a
+way in.
+
 ## How it is put together
 
 ```
@@ -188,6 +209,7 @@ src/hydration/
     electrolytes.py sodium, and the hyponatraemia guard
     plan.py         state -> a drinking schedule
   service.py      the only module that writes to the database
+  portability.py  export and import
   reports.py      read-only aggregation for history and insights
   charts.py       server-rendered SVG
   providers/      Garmin

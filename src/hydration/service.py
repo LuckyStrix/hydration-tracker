@@ -42,7 +42,8 @@ a perfectly good reading."""
 PROFILE_FIELDS = {
     "display_name", "body_mass_kg", "height_cm", "sex", "birth_year", "timezone",
     "wake_hour", "bed_hour", "sweat_sodium_mmol_l", "sweat_calibration",
-    "sweat_calibration_n", "absorption_cap_ml_h", "food_water_ml_day",
+    "sweat_calibration_n", "baseline_loss_scale", "feedback_n",
+    "absorption_cap_ml_h", "food_water_ml_day",
     "caffeine_diuresis_ml_mg", "trust_urine", "default_temp_c", "default_humidity_pct",
 }
 
@@ -67,6 +68,7 @@ def load_profile(connection: sqlite3.Connection) -> B.Profile:
         bed_hour=row["bed_hour"],
         sweat_sodium_mmol_l=row["sweat_sodium_mmol_l"],
         sweat_calibration=row["sweat_calibration"],
+        baseline_loss_scale=row["baseline_loss_scale"],
         absorption_cap_ml_h=row["absorption_cap_ml_h"],
         food_water_ml_day=row["food_water_ml_day"],
         caffeine_diuresis_ml_per_mg=row["caffeine_diuresis_ml_mg"],
@@ -279,7 +281,103 @@ def log_meal(
         return cursor.lastrowid
 
 
-VOIDABLE_TABLES = {"intake", "void", "body_weight", "activity", "symptom", "meal"}
+def log_feedback(
+    connection: sqlite3.Connection,
+    *,
+    verdict: str,
+    at: datetime | None = None,
+    note: str | None = None,
+    source: str = "web",
+) -> int:
+    """Record how the day felt, then re-fit the baseline from the history.
+
+    The re-fit is what makes this more than a diary entry: a run of answers
+    saying the model reads wet moves the loss constants, so the app stops
+    making the same mistake rather than being contradicted daily.
+    """
+    if verdict not in k.FEEDBACK_DEFICIT_PCT:
+        raise ValidationError(f"unknown verdict {verdict!r}")
+    moment = _validated_time(at)
+    with db.transaction(connection):
+        cursor = connection.execute(
+            "INSERT INTO feedback (at, verdict, note, source, created_at) VALUES (?, ?, ?, ?, ?)",
+            (moment, verdict, note, source, db.utcnow()),
+        )
+        row_id = cursor.lastrowid
+    refit_baseline_scale(connection)
+    return row_id
+
+
+def refit_baseline_scale(connection: sqlite3.Connection) -> tuple[float, int]:
+    """Fit the baseline-loss multiplier from how the days actually felt.
+
+    Each verdict is compared against what the ledger believed at that moment
+    *without* the verdict's own correction applied -- otherwise the fit would
+    be reading back its own influence, the same feedback loop the sweat
+    calibration had to be rescued from.
+
+    A residual saying "drier than the model thought" means the baseline losses
+    are too low, so the multiplier goes up. It is deliberately a scale on the
+    loss terms rather than an offset on the deficit: an offset would be undone
+    by the next observation, while this changes what the model expects of a day
+    and therefore survives.
+    """
+    rows = connection.execute(
+        """
+        SELECT at, verdict FROM feedback
+        WHERE voided_at IS NULL ORDER BY at DESC LIMIT 30
+        """
+    ).fetchall()
+    profile = load_profile(connection)
+    if len(rows) < k.MIN_FEEDBACK_FOR_FIT:
+        save_profile(connection, feedback_n=len(rows))
+        return profile.baseline_loss_scale, len(rows)
+
+    # One simulation covering the whole span, then a lookup per verdict.
+    # Simulating a day per row ran thirty simulations on every button press and
+    # took the better part of a second.
+    moments = [db.from_iso(row["at"]) for row in rows]
+    # The window must match the one the application itself reads from. A verdict
+    # is a reply to a number you were shown, so the residual has to be measured
+    # against that same number -- and the ledger is not indifferent to its
+    # window when observations are sparse. Fitted against a one-day window while
+    # the app displayed a three-day one, the two disagreed by 2.2 L on real
+    # data, and the fit moved the baseline confidently in the wrong direction.
+    timeline = timeline_for(
+        connection,
+        start=min(moments) - timedelta(days=k.DEFAULT_LOOKBACK_DAYS),
+        end=max(moments),
+        profile=profile,
+        apply_feedback=False,
+    )
+
+    residuals = [
+        profile.pct_to_ml(k.FEEDBACK_DEFICIT_PCT[row["verdict"]]) - timeline.at(moment).deficit_ml
+        for row, moment in zip(rows, moments)
+    ]
+    mean_residual = sum(residuals) / len(residuals)
+
+    # Convert "the model is this many millilitres out by the end of a day" into
+    # a proportional change in the day's baseline losses.
+    daily_baseline = (
+        k.INSENSIBLE_ML_PER_KG_H * profile.body_mass_kg * 24.0
+        + k.OBLIGATORY_URINE_ML_PER_KG_H * profile.body_mass_kg * 24.0
+    )
+    adjustment = mean_residual / daily_baseline if daily_baseline else 0.0
+    # Damped. See constants.FEEDBACK_LEARNING_RATE -- at full gain this is a
+    # unity-gain feedback controller and it oscillates into its own bounds.
+    scale = min(
+        max(
+            profile.baseline_loss_scale + adjustment * k.FEEDBACK_LEARNING_RATE,
+            k.BASELINE_SCALE_MIN,
+        ),
+        k.BASELINE_SCALE_MAX,
+    )
+    save_profile(connection, baseline_loss_scale=scale, feedback_n=len(rows))
+    return scale, len(rows)
+
+
+VOIDABLE_TABLES = {"intake", "void", "body_weight", "activity", "symptom", "meal", "feedback"}
 
 
 def void_entry(connection: sqlite3.Connection, table: str, row_id: int, reason: str = "corrected") -> None:
@@ -355,7 +453,10 @@ def record_activity(
     )
     measured = _measured_sweat_ml(connection, started_at, duration_s, fluid_consumed_ml)
     resolution = sweat_model.resolve_sweat(
-        measured_ml=measured, reported_ml=sweat_ml_reported, estimated_ml=estimated
+        measured_ml=measured,
+        reported_ml=sweat_ml_reported,
+        estimated_ml=estimated,
+        duration_s=duration_s,
     )
 
     payload = {
@@ -469,7 +570,13 @@ def refit_sweat_calibration(connection: sqlite3.Connection) -> tuple[float, int]
 
 # -- assembling the model's inputs ----------------------------------------
 
-def build_events(connection: sqlite3.Connection, start: datetime, end: datetime) -> list[B.Event]:
+def build_events(
+    connection: sqlite3.Connection,
+    start: datetime,
+    end: datetime,
+    *,
+    include_feedback: bool = True,
+) -> list[B.Event]:
     """Turn stored rows into the events the ledger consumes.
 
     This is the seam between what was logged and what it implies, and it is
@@ -542,6 +649,12 @@ def build_events(connection: sqlite3.Connection, start: datetime, end: datetime)
             )
         )
 
+    if include_feedback:
+        for row in connection.execute(
+            "SELECT * FROM feedback WHERE voided_at IS NULL AND at BETWEEN ? AND ?", (lo, hi)
+        ):
+            events.append(B.FeedbackEvent(at=db.from_iso(row["at"]), verdict=row["verdict"]))
+
     for row in connection.execute(
         "SELECT * FROM meal WHERE voided_at IS NULL AND at BETWEEN ? AND ?", (lo, hi)
     ):
@@ -610,11 +723,14 @@ def timeline_for(
     start: datetime,
     end: datetime,
     profile: B.Profile | None = None,
+    apply_feedback: bool = True,
 ) -> B.Timeline:
+    """`apply_feedback=False` is for the baseline fit, which must not read back
+    its own influence."""
     profile = profile or load_profile(connection)
     return B.simulate(
         profile,
-        build_events(connection, start - timedelta(hours=12), end),
+        build_events(connection, start - timedelta(hours=12), end, include_feedback=apply_feedback),
         start=start,
         end=end,
         environment=build_environment(connection, start, end, profile),

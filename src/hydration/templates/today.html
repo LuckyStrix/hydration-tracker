@@ -29,8 +29,12 @@
       {% elif plan.status == 'drink' %}&#9679; drink
       {% elif plan.status == 'drink_urgent' %}&#9650; drink now
       {% elif plan.status == 'add_sodium' %}&#9670; add sodium
+      {% elif plan.status == 'unknown' %}&#63; not sure
       {% else %}&#9632; slow down{% endif %}
     </span>
+    {% if plan.confidence.level != 'good' %}
+    <span class="chip">{{ plan.confidence.reason }}</span>
+    {% endif %}
     <p class="headline">{{ plan.headline }}</p>
 
     {% if plan.detail %}
@@ -119,6 +123,26 @@
         <button type="submit" class="primary">Log void</button>
       </form>
     </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>How did today feel?</h2>
+  <p class="sub">
+    You can tell things no sensor here can &mdash; thirst, a dull head, the flatness of
+    being behind. One answer is worth little; a run of them shifts what the model
+    expects of your body.
+  </p>
+  <div class="quick">
+    {% for value, label in [('waterlogged','Waterlogged'), ('a_bit_much','A bit much'),
+                            ('about_right','About right'), ('a_bit_dry','A bit dry'),
+                            ('very_dry','Very dry')] %}
+    <form method="post" action="/log/feel">
+      {{ csrf(csrf_token) }}
+      <input type="hidden" name="verdict" value="{{ value }}">
+      <button type="submit">{{ label }}</button>
+    </form>
+    {% endfor %}
   </div>
 </div>
 

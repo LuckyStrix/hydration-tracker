@@ -384,3 +384,8 @@ footer.foot {
 .w-60 { width: 60%; } .w-65 { width: 65%; } .w-70 { width: 70%; } .w-75 { width: 75%; }
 .w-80 { width: 80%; } .w-85 { width: 85%; } .w-90 { width: 90%; } .w-95 { width: 95%; }
 .w-100 { width: 100%; }
+
+/* The honest answer when there is not enough data to give one. */
+.status-unknown { color: var(--ink-muted); border-color: var(--ink-muted); }
+input[type="file"] { font: inherit; font-size: 14px; color: var(--ink-2); }
+label.field input[type="checkbox"] { width: auto; margin-right: 6px; }

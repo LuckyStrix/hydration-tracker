@@ -46,6 +46,13 @@ class Profile:
 
     sweat_sodium_mmol_l: float = k.SWEAT_SODIUM_MMOL_PER_L
     sweat_calibration: float = 1.0
+
+    baseline_loss_scale: float = 1.0
+    """Multiplier on insensible loss and obligatory urine, fitted from the
+    end-of-day question. If you consistently say you felt drier than the model
+    claimed, your baseline losses are higher than the population average and
+    this is where that gets recorded."""
+
     absorption_cap_ml_h: float = k.ABSORPTION_CAP_ML_PER_H
     food_water_ml_day: float = k.FOOD_WATER_ML_PER_DAY
     caffeine_diuresis_ml_per_mg: float = k.CAFFEINE_DIURESIS_ML_PER_MG
@@ -125,7 +132,21 @@ class MealEvent:
     sodium_mg: float = 0.0
 
 
-Event = IntakeEvent | VoidEvent | WeightEvent | ActivityEvent | MealEvent
+@dataclass(frozen=True)
+class FeedbackEvent:
+    """How the day actually felt.
+
+    A third observer, alongside urine colour and body weight. You have
+    information about your own body that no sensor here can reach -- thirst,
+    headache, the particular flatness of being under-hydrated -- and it is
+    worth something even though it is not worth much on any single day.
+    """
+
+    at: datetime
+    verdict: str  # a key of constants.FEEDBACK_DEFICIT_PCT
+
+
+Event = IntakeEvent | VoidEvent | WeightEvent | ActivityEvent | MealEvent | FeedbackEvent
 
 
 class Environment:
@@ -215,25 +236,108 @@ class Timeline:
     corrections: list[Correction]
     weight_trend_kg: float | None = None
 
+    _index: list[datetime] | None = field(default=None, repr=False, compare=False)
+
+    last_observation_at: datetime | None = None
+    """The last time something physical corrected the ledger -- a void, a
+    morning weight, an end-of-day verdict."""
+
+    last_engagement_at: datetime | None = None
+    """The last time a human logged anything on purpose.
+
+    Drives the no-evidence regression, because that assumption is specifically
+    about *drinking behaviour*: while you are keeping the log, an absence of
+    drinks means you did not drink."""
+
+    last_evidence_at: datetime | None = None
+    """The last time any real input reached the ledger, including a synced
+    activity.
+
+    Deliberately separate from engagement. A ride that Garmin synced tells us
+    a great deal about your state -- four litres of sweat is not a guess -- but
+    nothing about whether you are still recording what you drink. Treating one
+    signal as the answer to both questions made a hard ride read as 'not enough
+    data' moments after it finished."""
+
+    def confidence(self, now: datetime | None = None) -> "Confidence":
+        return assess_confidence(self, now or self.final.at)
+
     @property
     def final(self) -> Sample:
         return self.samples[-1]
 
     def at(self, when: datetime) -> Sample:
         """Nearest sample at or before `when`, or the first if `when` predates
-        the simulation."""
-        chosen = self.samples[0]
-        for sample in self.samples:
-            if sample.at > when:
-                break
-            chosen = sample
-        return chosen
+        the simulation.
+
+        Bisected rather than scanned: `delta` calls this twice and the fits call
+        it once per data point, over timelines that can run to tens of thousands
+        of samples.
+        """
+        import bisect
+
+        if self._index is None:
+            self._index = [sample.at for sample in self.samples]
+        position = bisect.bisect_right(self._index, when)
+        return self.samples[max(0, position - 1)]
 
     def delta(self, attr: str, hours: float, *, end: datetime | None = None) -> float:
         """How much a cumulative counter advanced over the last `hours`."""
         end = end or self.final.at
         start = self.at(end - timedelta(hours=hours))
         return getattr(self.at(end), attr) - getattr(start, attr)
+
+
+@dataclass(frozen=True)
+class Confidence:
+    """How much the current estimate is worth.
+
+    The point of this type is to let the application say "I do not know"
+    instead of answering confidently from nothing. An estimate running
+    open-loop for two days is not the same object as one corrected an hour ago,
+    and presenting them identically is how a tracker ends up asserting a
+    deficit nobody could survive.
+    """
+
+    level: str  # 'good' | 'fair' | 'stale'
+    hours_since_observation: float | None
+    hours_since_engagement: float | None
+    reason: str
+
+    @property
+    def is_stale(self) -> bool:
+        return self.level == "stale"
+
+
+def assess_confidence(timeline: "Timeline", now: datetime) -> Confidence:
+    def hours_since(moment: datetime | None) -> float | None:
+        return None if moment is None else (now - moment).total_seconds() / 3600.0
+
+    since_observation = hours_since(timeline.last_observation_at)
+    since_engagement = hours_since(timeline.last_engagement_at)
+    since_evidence = hours_since(timeline.last_evidence_at)
+
+    if since_observation is not None and since_observation <= k.OBSERVATION_FRESH_H:
+        return Confidence(
+            "good", since_observation, since_engagement,
+            f"corrected against a real reading {since_observation:.0f} h ago",
+        )
+    if since_observation is not None and since_observation <= k.OBSERVATION_FAIR_H:
+        return Confidence(
+            "fair", since_observation, since_engagement,
+            f"last reading was {since_observation:.0f} h ago, so this is drifting",
+        )
+    if since_evidence is not None and since_evidence <= k.UNLOGGED_GRACE_H:
+        return Confidence(
+            "fair", since_observation, since_engagement,
+            "running on recent logged input alone -- no void or weight to check it against",
+        )
+
+    if since_evidence is None:
+        detail = "nothing has been logged at all"
+    else:
+        detail = f"nothing logged for {since_evidence:.0f} h"
+    return Confidence("stale", since_observation, since_engagement, detail)
 
 
 # -- the simulation --------------------------------------------------------
@@ -264,10 +368,19 @@ def simulate(
     ordered = sorted(events, key=_event_time)
     sweat_rate, kcal_rate = _activity_rates(ordered, start, end, step, step_minutes)
 
+    # Built once, in a single forward pass. Deriving each void's timing context
+    # by scanning the whole event list per void is O(voids x events): with a
+    # year of history it took ten seconds, of which eight were this.
+    void_contexts = build_void_contexts(ordered)
+
     state = _State(
         deficit_ml=initial_deficit_ml,
         gut_ml=0.0,
         weight_trend_kg=initial_weight_trend_kg,
+        # Events just before the window still count as engagement -- otherwise
+        # opening a three-day window on an actively-used log would read as
+        # three days of silence.
+        last_engagement_at=_latest_engagement_before(ordered, start),
     )
     cumulative = Sample(at=start, deficit_ml=initial_deficit_ml, gut_ml=0.0, temp_c=0.0, humidity_pct=0.0)
     samples: list[Sample] = []
@@ -300,6 +413,11 @@ def simulate(
             event_idx += 1
             if _event_time(event) < start:
                 continue
+            if _is_engagement(event):
+                state.last_engagement_at = _event_time(event)
+                state.last_evidence_at = _event_time(event)
+            elif isinstance(event, ActivityEvent):
+                state.last_evidence_at = _event_time(event) + timedelta(seconds=event.duration_s)
             if isinstance(event, IntakeEvent):
                 _apply_intake(state, cumulative, event)
             elif isinstance(event, MealEvent):
@@ -313,17 +431,27 @@ def simulate(
                     state.gut_ml += event.fluid_consumed_ml
                     cumulative.intake_ml += event.fluid_consumed_ml
             else:
-                pending_observers.append(event)
+                pending_observers.append((event, event_idx - 1))
 
         # 2. Physics for this step.
-        _step_physics(profile, state, cumulative, temp_c, humidity, step_h, index, sweat_rate, kcal_rate, when)
+        _step_physics(
+            profile, state, cumulative, temp_c, humidity, step_h, index,
+            sweat_rate, kcal_rate, when, start,
+        )
 
         # 3. Observers.
         if apply_observers:
-            for event in pending_observers:
-                correction = _apply_observer(profile, state, ordered, event)
+            for event, index in pending_observers:
+                correction = _apply_observer(profile, state, event, void_contexts.get(index))
                 if correction is not None:
                     corrections.append(correction)
+                    state.last_observation_at = _event_time(event)
+
+        # 4. Bounds. A backstop, not a model -- see constants.MAX_DEFICIT_PCT.
+        state.deficit_ml = min(
+            max(state.deficit_ml, profile.pct_to_ml(k.MIN_DEFICIT_PCT)),
+            profile.pct_to_ml(k.MAX_DEFICIT_PCT),
+        )
 
         samples.append(
             replace(
@@ -338,7 +466,15 @@ def simulate(
         when = window_end
         index += 1
 
-    return Timeline(profile=profile, samples=samples, corrections=corrections, weight_trend_kg=state.weight_trend_kg)
+    return Timeline(
+        profile=profile,
+        samples=samples,
+        corrections=corrections,
+        weight_trend_kg=state.weight_trend_kg,
+        last_observation_at=state.last_observation_at,
+        last_engagement_at=state.last_engagement_at,
+        last_evidence_at=state.last_evidence_at,
+    )
 
 
 @dataclass
@@ -348,6 +484,33 @@ class _State:
     weight_trend_kg: float | None
     alcohol_pending_ml: float = 0.0
     caffeine_pending_ml: float = 0.0
+    last_engagement_at: datetime | None = None
+    last_evidence_at: datetime | None = None
+    last_observation_at: datetime | None = None
+
+
+ENGAGEMENT_EVENTS = (IntakeEvent, MealEvent, VoidEvent, WeightEvent, FeedbackEvent)
+"""Things a person has to do on purpose.
+
+Activities and ambient readings arrive on their own -- Garmin syncs, Home
+Assistant pushes -- so they say nothing about whether anyone is still keeping
+the log. Counting them as engagement would defeat the whole staleness check.
+"""
+
+
+def _is_engagement(event: Event) -> bool:
+    return isinstance(event, ENGAGEMENT_EVENTS)
+
+
+def _latest_engagement_before(events: list[Event], moment: datetime) -> datetime | None:
+    latest: datetime | None = None
+    for event in events:
+        at = _event_time(event)
+        if at >= moment:
+            break
+        if _is_engagement(event):
+            latest = at
+    return latest
 
 
 def _event_time(event: Event) -> datetime:
@@ -382,6 +545,7 @@ def _step_physics(
     sweat_rate: dict[int, float],
     kcal_rate: dict[int, float],
     when: datetime,
+    window_start: datetime,
 ) -> None:
     mass = profile.body_mass_kg
 
@@ -399,10 +563,15 @@ def _step_physics(
     heat_index = sweat_model.heat_index_c(temp_c, humidity)
     heat_multiple = 1.0 + k.INSENSIBLE_HEAT_COEFF * max(0.0, heat_index - k.INSENSIBLE_HEAT_BASE_C)
     heat_multiple = min(heat_multiple, k.INSENSIBLE_HEAT_MAX_MULTIPLE)
-    insensible = k.INSENSIBLE_ML_PER_KG_H * mass * step_h * heat_multiple
+    insensible = k.INSENSIBLE_ML_PER_KG_H * mass * step_h * heat_multiple * profile.baseline_loss_scale
     insensible += k.FECAL_ML_PER_DAY * step_h / 24.0
     state.deficit_ml += insensible
     cumulative.insensible_ml += insensible
+
+    # The routine background of a day: what leaks out and what food and
+    # metabolism put back. Tracked separately because, once the log goes quiet,
+    # it is exactly the part we stop believing -- see the end of this function.
+    baseline_net = insensible
 
     # -- sweat -------------------------------------------------------------
     sweat_ml = sweat_rate.get(index, 0.0)
@@ -417,7 +586,7 @@ def _step_physics(
     # The floor leaves regardless; surplus on top of it is the body shedding
     # water it does not need, which is exactly why urine runs pale after a big
     # drink. That behaviour is emergent here, not special-cased anywhere.
-    urine = k.OBLIGATORY_URINE_ML_PER_KG_H * mass * step_h
+    urine = k.OBLIGATORY_URINE_ML_PER_KG_H * mass * step_h * profile.baseline_loss_scale
     if state.deficit_ml < 0:
         surplus = -state.deficit_ml
         shed = surplus * (1.0 - 0.5 ** (step_h * 60.0 / k.DIURESIS_HALFLIFE_MIN))
@@ -430,6 +599,7 @@ def _step_physics(
 
     state.deficit_ml += urine
     cumulative.urine_ml += urine
+    baseline_net += urine
 
     # -- gains that are not drinks ----------------------------------------
     activity_kcal = kcal_rate.get(index, 0.0)
@@ -437,14 +607,43 @@ def _step_physics(
     total_kcal = profile.rmr_kcal_per_day * step_h / 24.0 + activity_kcal
     metabolic = total_kcal * k.METABOLIC_WATER_ML_PER_KCAL
     state.deficit_ml -= metabolic
+    baseline_net -= metabolic
 
     # Food water trickles across waking hours only -- you are not eating at
     # three in the morning, and spreading it over the full day makes the model
     # read wet at breakfast and dry at bedtime.
-    local_hour = when.astimezone(profile.tz).hour + when.astimezone(profile.tz).minute / 60.0
+    local = when.astimezone(profile.tz)
+    local_hour = local.hour + local.minute / 60.0
     awake_hours = _awake_hours(profile)
     if _is_awake(profile, local_hour) and awake_hours > 0:
-        state.deficit_ml -= profile.food_water_ml_day * step_h / awake_hours
+        food = profile.food_water_ml_day * step_h / awake_hours
+        state.deficit_ml -= food
+        baseline_net -= food
+
+    # -- and what to believe when there is nothing to go on ----------------
+    # While the log is being kept, an absence of drinks means you did not
+    # drink. Once it stops, that reading becomes untenable: a person with
+    # access to water does not passively dehydrate, because thirst works. So
+    # the estimate regresses toward an ordinary mild deficit instead of
+    # integrating off to figures nobody survives.
+    idle_from = state.last_engagement_at or window_start
+    idle_h = (when - idle_from).total_seconds() / 3600.0
+    if idle_h > k.UNLOGGED_GRACE_H:
+        # Undo the routine background of the day, then relax toward the prior.
+        #
+        # Undoing it is the honest move: the assumption being made is that you
+        # are drinking normally without recording it, and normal drinking is
+        # what covers exactly these losses. Leaving them in would mean the
+        # estimate settles wherever the regression happens to balance them --
+        # which came out at 1.6% of body mass, a permanent mild dehydration
+        # asserted from no evidence whatsoever.
+        #
+        # Sweat and gut absorption are deliberately *not* undone. A synced ride
+        # is real evidence of fluid lost, whether or not anyone was logging.
+        state.deficit_ml -= baseline_net
+        prior = profile.pct_to_ml(k.UNLOGGED_PRIOR_PCT)
+        pull = 1.0 - 0.5 ** (step_h / k.UNLOGGED_HALFLIFE_H)
+        state.deficit_ml += (prior - state.deficit_ml) * pull
 
 
 def _awake_hours(profile: Profile) -> float:
@@ -487,10 +686,13 @@ def _activity_rates(
     return sweat_rate, kcal_rate
 
 
-def _apply_observer(profile: Profile, state: _State, events: list[Event], event: Event) -> Correction | None:
+def _apply_observer(
+    profile: Profile, state: _State, event: Event, context: urine_model.VoidContext | None
+) -> Correction | None:
     if isinstance(event, VoidEvent):
-        ctx = _void_context(events, event)
-        reading = urine_model.read(ctx)
+        if context is None:
+            return None
+        reading = urine_model.read(context)
         # The profile can dial overall trust in colour readings up or down
         # without touching each timing rule.
         weight = reading.confidence * profile.trust_urine
@@ -505,6 +707,23 @@ def _apply_observer(profile: Profile, state: _State, events: list[Event], event:
             blended_ml=state.deficit_ml,
             confidence=reading.confidence,
             reasons=list(reading.reasons),
+        )
+
+    if isinstance(event, FeedbackEvent):
+        target_pct = k.FEEDBACK_DEFICIT_PCT.get(event.verdict)
+        if target_pct is None:
+            return None
+        observed = profile.pct_to_ml(target_pct)
+        before = state.deficit_ml
+        state.deficit_ml = (1.0 - k.TRUST_FEEDBACK) * before + k.TRUST_FEEDBACK * observed
+        return Correction(
+            at=event.at,
+            kind="feedback",
+            ledger_ml=before,
+            observed_ml=observed,
+            blended_ml=state.deficit_ml,
+            confidence=k.TRUST_FEEDBACK,
+            reasons=[f"you said the day felt {event.verdict.replace('_', ' ')}"],
         )
 
     if isinstance(event, WeightEvent):
@@ -536,37 +755,56 @@ def _apply_observer(profile: Profile, state: _State, events: list[Event], event:
     return None
 
 
-def _void_context(events: list[Event], void: VoidEvent) -> urine_model.VoidContext:
-    """Gather the timing signals that decide how much this void is worth."""
+def build_void_contexts(events: list[Event]) -> dict[int, urine_model.VoidContext]:
+    """Derive every void's timing context in one forward pass.
 
-    def minutes_since(predicate) -> float | None:
-        best: datetime | None = None
-        for event in events:
-            if event is void or _event_time(event) > void.at:
-                continue
-            if predicate(event):
-                if best is None or _event_time(event) > best:
-                    best = _event_time(event)
-        if best is None:
-            return None
-        return (void.at - best).total_seconds() / 60.0
+    Each void needs to know how long it has been since the previous void, since
+    a large drink, since exercise ended and since a multivitamin. Answering
+    those by scanning the event list per void is O(voids x events), which on a
+    year of history cost ten seconds a page -- eight of them here. Since the
+    events are already in time order, the same answers fall out of a single
+    walk that just remembers the last of each thing it passed.
 
-    def is_activity_end(event: Event) -> bool:
-        if not isinstance(event, ActivityEvent):
-            return False
-        return event.at + timedelta(seconds=event.duration_s) <= void.at
+    Activity *ends* are the one case that does not arrive in order, because a
+    long session started earlier can finish later than a short one started
+    after it. Those are kept in a sorted list and bisected.
+    """
+    import bisect
 
-    return urine_model.VoidContext(
-        colour=void.colour,
-        at=void.at,
-        minutes_since_previous_void=minutes_since(lambda e: isinstance(e, VoidEvent)),
-        minutes_since_significant_intake=minutes_since(
-            lambda e: isinstance(e, IntakeEvent) and e.volume_ml >= urine_model.SIGNIFICANT_INTAKE_ML
-        ),
-        minutes_since_exercise=minutes_since(is_activity_end),
-        minutes_since_multivitamin=minutes_since(lambda e: isinstance(e, IntakeEvent) and e.is_multivitamin),
-        is_first_morning=void.is_first_morning,
-    )
+    contexts: dict[int, urine_model.VoidContext] = {}
+    last_void: datetime | None = None
+    last_big_drink: datetime | None = None
+    last_multivitamin: datetime | None = None
+    activity_ends: list[datetime] = []
+
+    def minutes_between(earlier: datetime | None, later: datetime) -> float | None:
+        return None if earlier is None else (later - earlier).total_seconds() / 60.0
+
+    for index, event in enumerate(events):
+        at = _event_time(event)
+
+        if isinstance(event, VoidEvent):
+            finished = bisect.bisect_right(activity_ends, at)
+            last_activity_end = activity_ends[finished - 1] if finished else None
+            contexts[index] = urine_model.VoidContext(
+                colour=event.colour,
+                at=at,
+                minutes_since_previous_void=minutes_between(last_void, at),
+                minutes_since_significant_intake=minutes_between(last_big_drink, at),
+                minutes_since_exercise=minutes_between(last_activity_end, at),
+                minutes_since_multivitamin=minutes_between(last_multivitamin, at),
+                is_first_morning=event.is_first_morning,
+            )
+            last_void = at
+        elif isinstance(event, IntakeEvent):
+            if event.volume_ml >= urine_model.SIGNIFICANT_INTAKE_ML:
+                last_big_drink = at
+            if event.is_multivitamin:
+                last_multivitamin = at
+        elif isinstance(event, ActivityEvent):
+            bisect.insort(activity_ends, at + timedelta(seconds=event.duration_s))
+
+    return contexts
 
 
 def daily_target_ml(profile: Profile, *, sweat_ml: float = 0.0, temp_c: float | None = None, humidity_pct: float | None = None) -> float:
@@ -587,8 +825,8 @@ def daily_target_ml(profile: Profile, *, sweat_ml: float = 0.0, temp_c: float | 
         k.INSENSIBLE_HEAT_MAX_MULTIPLE,
     )
     losses = (
-        k.INSENSIBLE_ML_PER_KG_H * profile.body_mass_kg * 24.0 * heat_multiple
-        + k.TARGET_URINE_ML_PER_KG_DAY * profile.body_mass_kg
+        k.INSENSIBLE_ML_PER_KG_H * profile.body_mass_kg * 24.0 * heat_multiple * profile.baseline_loss_scale
+        + k.TARGET_URINE_ML_PER_KG_DAY * profile.body_mass_kg * profile.baseline_loss_scale
         + k.FECAL_ML_PER_DAY
         + sweat_ml
     )

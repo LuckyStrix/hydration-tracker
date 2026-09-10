@@ -10,6 +10,7 @@ import pytest
 from hydration import db, service
 from hydration.errors import ConflictError, NotFound, ValidationError
 from hydration.model import balance as B
+from hydration.model import constants as k
 
 UTC = timezone.utc
 EASTERN = ZoneInfo("America/New_York")
@@ -311,3 +312,122 @@ def test_calibration_does_not_feed_back_on_itself(tz_conn):
         )
     service.refit_sweat_calibration(tz_conn)
     assert service.load_profile(tz_conn).sweat_calibration == pytest.approx(first, rel=0.01)
+
+
+# -- the end-of-day question -----------------------------------------------
+
+def test_feedback_is_recorded_and_reaches_the_model(tz_conn):
+    now = datetime.now(UTC)
+    service.log_feedback(tz_conn, verdict="a_bit_dry", at=now - timedelta(minutes=30))
+    events = service.build_events(tz_conn, now - timedelta(hours=2), now)
+    assert any(isinstance(e, B.FeedbackEvent) for e in events)
+
+
+def test_a_nonsense_verdict_is_refused(tz_conn):
+    with pytest.raises(ValidationError):
+        service.log_feedback(tz_conn, verdict="tremendous")
+
+
+def test_the_baseline_waits_for_enough_answers_then_moves(tz_conn):
+    """One grumpy evening should change nothing; a consistent run should."""
+    start = datetime.now(UTC) - timedelta(days=10)
+    for day in range(4):
+        service.log_feedback(tz_conn, verdict="very_dry", at=start + timedelta(days=day))
+    assert service.load_profile(tz_conn).baseline_loss_scale == 1.0, "four is not a pattern"
+
+    for day in range(4, 10):
+        service.log_feedback(tz_conn, verdict="very_dry", at=start + timedelta(days=day))
+    moved = service.load_profile(tz_conn).baseline_loss_scale
+    assert moved > 1.0, "consistently feeling drier than the model says should raise the baseline"
+
+
+def test_the_baseline_moves_the_other_way_too(tz_conn):
+    start = datetime.now(UTC) - timedelta(days=10)
+    for day in range(8):
+        service.log_feedback(tz_conn, verdict="waterlogged", at=start + timedelta(days=day))
+    assert service.load_profile(tz_conn).baseline_loss_scale < 1.0
+
+
+def test_the_baseline_fit_stays_within_bounds(tz_conn):
+    """A run of extreme answers must not make the model incoherent."""
+    start = datetime.now(UTC) - timedelta(days=60)
+    for day in range(50):
+        service.log_feedback(tz_conn, verdict="very_dry", at=start + timedelta(days=day))
+    scale = service.load_profile(tz_conn).baseline_loss_scale
+    assert k.BASELINE_SCALE_MIN <= scale <= k.BASELINE_SCALE_MAX
+
+
+def test_the_baseline_fit_does_not_read_back_its_own_influence(tz_conn):
+    """The same feedback-loop trap the sweat calibration had to be rescued from:
+    the fit compares each verdict against a ledger simulated *without* the
+    verdicts applied, so it measures the model's error and not its own echo."""
+    start = datetime.now(UTC) - timedelta(days=12)
+    for day in range(8):
+        service.log_feedback(tz_conn, verdict="a_bit_dry", at=start + timedelta(days=day))
+
+    timeline = service.timeline_for(
+        tz_conn, start=start - timedelta(days=1), end=datetime.now(UTC), apply_feedback=False
+    )
+    assert not [c for c in timeline.corrections if c.kind == "feedback"]
+
+
+def test_the_baseline_fit_converges_instead_of_oscillating(tz_conn):
+    """It is a feedback controller: the ledger it measures against already
+    contains the multiplier being fitted. At full gain that oscillates -- six
+    identical 'a bit dry' answers, which should raise the baseline, drove it
+    into its own *floor* instead. Damped, each step must be smaller than the
+    last and the direction must be right."""
+    start = datetime.now(UTC) - timedelta(days=12)
+    for day in range(8):
+        service.log_feedback(tz_conn, verdict="a_bit_dry", at=start + timedelta(days=day))
+
+    scale = service.load_profile(tz_conn).baseline_loss_scale
+    assert scale > 1.0, "feeling drier than the model says must raise the baseline"
+
+    steps = []
+    for _ in range(5):
+        service.refit_baseline_scale(tz_conn)
+        latest = service.load_profile(tz_conn).baseline_loss_scale
+        steps.append(abs(latest - scale))
+        scale = latest
+
+    assert steps[0] >= steps[-1], "the steps must shrink, not grow"
+    assert k.BASELINE_SCALE_MIN <= scale <= k.BASELINE_SCALE_MAX
+
+
+def test_repeated_answers_in_one_sitting_do_not_break_the_fit(tz_conn):
+    """The demo case that exposed the oscillation: several answers logged
+    seconds apart rather than spread over days."""
+    for _ in range(6):
+        service.log_feedback(tz_conn, verdict="a_bit_dry")
+    scale = service.load_profile(tz_conn).baseline_loss_scale
+    assert scale > 1.0, f"'a bit dry' must not lower the baseline (got {scale})"
+    assert scale <= k.BASELINE_SCALE_MAX
+
+
+def test_the_baseline_fit_measures_against_what_the_app_actually_showed(tz_conn):
+    """A verdict is a reply to a number you were shown.
+
+    The ledger is not indifferent to its window when observations are sparse,
+    so the fit has to use the same lookback the app reads from. Fitted against
+    a one-day window while the app displayed a three-day one, the two
+    disagreed by 2.2 L on real data and the baseline moved confidently the
+    wrong way: 'a bit dry' lowered it.
+    """
+    now = datetime.now(UTC)
+    # A day that leaves the two windows disagreeing: a big sweat loss inside
+    # the last 24 hours, with the drinking that covered it further back.
+    service.record_activity(
+        tz_conn, provider="garmin", external_id="r1", started_at=now - timedelta(hours=20),
+        duration_s=7200, kcal=1600, sweat_ml_reported=2400,
+    )
+    for hour in range(30, 8, -2):
+        service.log_intake(tz_conn, beverage="Water", volume_ml=500.0, at=now - timedelta(hours=hour))
+    for hour in (26, 20, 14, 8):
+        service.log_void(tz_conn, colour=4, at=now - timedelta(hours=hour))
+
+    for day in range(6):
+        service.log_feedback(tz_conn, verdict="a_bit_dry", at=now - timedelta(hours=6 - day))
+
+    scale = service.load_profile(tz_conn).baseline_loss_scale
+    assert scale > 1.0, f"feeling drier than the model said must raise the baseline, got {scale}"

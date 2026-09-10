@@ -5,9 +5,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Form, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, Response
 
-from .. import charts, config, db, reports, service, units
+from .. import charts, config, db, portability, reports, service, units
 from ..errors import ValidationError
 from ..model import plan as P
 from . import deps
@@ -230,6 +230,77 @@ def log_activity(
     return deps.redirect("/activities", "Activity recorded.", "good")
 
 
+@router.post("/log/feel")
+def log_feel(request: Request, verdict: str = Form(...), note: str = Form("")):
+    """The end-of-day question.
+
+    Worth more than it looks: it is the only reading that can see what no
+    sensor here reaches, and a run of them shifts the model's baseline rather
+    than just being recorded.
+    """
+    conn = deps.connection()
+    service.log_feedback(conn, verdict=verdict, note=note.strip() or None)
+    scale = service.load_profile(conn).baseline_loss_scale
+    return deps.redirect(
+        "/",
+        f"Noted. Baseline losses now at {scale:.2f}x the population average.",
+        "good",
+    )
+
+
+@router.get("/export/hydration.json")
+def export_json(request: Request):
+    """Everything, in a form the importer can put back.
+
+    A download rather than a page, and a plain GET so it needs no JavaScript.
+    """
+    payload = portability.export_json(deps.connection())
+    stamp = datetime.now(deps.profile_timezone(deps.connection())).strftime("%Y%m%d")
+    return Response(
+        payload,
+        media_type="application/json",
+        headers={"content-disposition": f'attachment; filename="hydration-{stamp}.json"'},
+    )
+
+
+@router.get("/export/entries.csv")
+def export_csv(request: Request):
+    payload = portability.export_csv(deps.connection())
+    stamp = datetime.now(deps.profile_timezone(deps.connection())).strftime("%Y%m%d")
+    return Response(
+        payload,
+        media_type="text/csv",
+        headers={"content-disposition": f'attachment; filename="hydration-{stamp}.csv"'},
+    )
+
+
+@router.post("/import")
+async def import_data(request: Request):
+    """Merge an exported file back in.
+
+    Reads the upload by hand rather than through a typed parameter, because the
+    CSRF middleware has already consumed the multipart body and re-parsing it
+    is the reliable way to get both the token and the file.
+    """
+    form = await request.form()
+    upload = form.get("file")
+    if upload is None or not hasattr(upload, "read"):
+        raise ValidationError("choose a file to import")
+
+    raw = await upload.read()
+    if len(raw) > 64 * 1024 * 1024:
+        raise ValidationError("that file is larger than this importer will accept")
+
+    payload = portability.parse_export(raw)
+    counts = portability.import_payload(
+        deps.connection(), payload, restore_profile=bool(form.get("restore_profile"))
+    )
+    added = sum(counts.values())
+    detail = ", ".join(f"{count} {name}" for name, count in sorted(counts.items()) if count)
+    message = f"Imported {added} new entries ({detail})." if added else "Nothing new -- already imported."
+    return deps.redirect("/settings", message, "good")
+
+
 @router.post("/log/retract")
 def retract(request: Request, table: str = Form(...), row_id: int = Form(...), back: str = Form("/")):
     service.void_entry(deps.connection(), table, row_id, reason="retracted from the web UI")
@@ -314,5 +385,7 @@ def insights(request: Request):
         calibration={
             "factor": row["sweat_calibration"],
             "count": row["sweat_calibration_n"],
+            "baseline_scale": row["baseline_loss_scale"],
+            "feedback_n": row["feedback_n"],
         },
     )

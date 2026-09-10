@@ -186,6 +186,26 @@ async def log_symptom(request: Request):
     return _json({"ok": True, "id": row_id})
 
 
+@router.post("/feel")
+async def log_feel(request: Request):
+    """How the day felt. One of: waterlogged, a_bit_much, about_right,
+    a_bit_dry, very_dry."""
+    payload = await _body(request)
+    verdict = payload.get("verdict") or payload.get("feel")
+    if not verdict:
+        raise ValidationError(
+            "send verdict: waterlogged, a_bit_much, about_right, a_bit_dry or very_dry"
+        )
+    row_id = service.log_feedback(
+        deps.connection(),
+        verdict=str(verdict),
+        at=_time(payload),
+        note=payload.get("note"),
+        source=payload.get("source") or "hass",
+    )
+    return _json({"ok": True, "id": row_id})
+
+
 @router.post("/meal")
 async def log_meal(request: Request):
     payload = await _body(request)
@@ -239,6 +259,9 @@ def status(request: Request):
                 100 * plan.daily_intake_ml / plan.daily_target_ml if plan.daily_target_ml else 0
             ),
             "sweat_24h_l": rounded(timeline.delta("sweat_ml", 24.0) / 1000),
+            # So a dashboard can show a guess differently from a checked figure.
+            "confidence": plan.confidence.level,
+            "confidence_reason": plan.confidence.reason,
             "detail": plan.detail,
             "flags": plan.medical_flags,
             "updated_at": db.to_iso(now),

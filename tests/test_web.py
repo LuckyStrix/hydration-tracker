@@ -224,7 +224,7 @@ def test_the_status_endpoint_fits_a_hass_sensor(client, token):
     assert len(payload["headline"]) <= HASS_STATE_LIMIT, "a HASS entity state is capped at 255"
     for key in ("headline", "status", "deficit_l", "next_dose_l", "sodium_mg", "daily_target_l", "flags"):
         assert key in payload
-    assert payload["status"] in {"ok", "drink", "drink_urgent", "add_sodium", "slow_down"}
+    assert payload["status"] in {"ok", "drink", "drink_urgent", "add_sodium", "slow_down", "unknown"}
 
 
 def test_the_status_endpoint_reflects_what_was_just_logged(client, token):
@@ -313,3 +313,92 @@ def test_the_status_endpoint_never_reports_negative_zero(client, token):
     payload = client.get("/api/v1/status", headers=_auth(token)).json()
     for key in ("deficit_l", "deficit_pct", "next_dose_l", "daily_intake_l"):
         assert str(payload[key]) != "-0.0", f"{key} came back as negative zero"
+
+
+# -- the end-of-day question ----------------------------------------------
+
+def test_the_feel_buttons_record_and_refit(signed_in):
+    response = signed_in.post(
+        "/log/feel", data={"verdict": "a_bit_dry", "csrf_token": _csrf(signed_in)}
+    )
+    assert response.status_code == 303
+    assert deps.connection().execute("SELECT count(*) FROM feedback").fetchone()[0] == 1
+
+
+def test_hass_can_send_how_the_day_felt(client, token):
+    response = client.post("/api/v1/feel", json={"verdict": "about_right"}, headers=_auth(token))
+    assert response.status_code == 200 and response.json()["ok"]
+
+
+def test_a_nonsense_verdict_over_the_api_is_a_400(client, token):
+    response = client.post("/api/v1/feel", json={"verdict": "splendid"}, headers=_auth(token))
+    assert response.status_code == 400
+
+
+def test_the_status_endpoint_reports_its_own_confidence(client, token):
+    """So a dashboard can show a guess differently from a checked figure."""
+    payload = client.get("/api/v1/status", headers=_auth(token)).json()
+    assert payload["confidence"] in {"good", "fair", "stale"}
+    assert payload["confidence_reason"]
+
+
+def test_an_empty_database_says_it_does_not_know(client, token):
+    """Rather than asserting a deficit from nothing, which is how this used to
+    manufacture alarming figures."""
+    payload = client.get("/api/v1/status", headers=_auth(token)).json()
+    assert payload["confidence"] == "stale"
+    assert payload["status"] == "unknown"
+    assert payload["flags"] == []
+
+
+# -- export and import over the web ---------------------------------------
+
+def test_the_json_export_downloads(signed_in, client, token):
+    client.post("/api/v1/intake", json={"beverage": "Water", "volume_l": 0.4}, headers=_auth(token))
+    response = signed_in.get("/export/hydration.json")
+    assert response.status_code == 200
+    assert "attachment" in response.headers["content-disposition"]
+    assert response.json()["format"] == "hydration-tracker-export"
+
+
+def test_the_csv_export_downloads(signed_in, client, token):
+    client.post("/api/v1/intake", json={"beverage": "Water", "volume_l": 0.4}, headers=_auth(token))
+    response = signed_in.get("/export/entries.csv")
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert "at,kind,what" in response.text
+
+
+def test_exports_are_not_public(client):
+    """They are the entire health log."""
+    for path in ("/export/hydration.json", "/export/entries.csv"):
+        assert client.get(path).status_code == 303
+
+
+def test_a_file_can_be_imported_back(signed_in, client, token):
+    import json
+
+    client.post("/api/v1/intake", json={"beverage": "Coffee", "volume_l": 0.3}, headers=_auth(token))
+    exported = signed_in.get("/export/hydration.json").text
+
+    conn = deps.connection()
+    conn.execute("DELETE FROM intake")
+    assert conn.execute("SELECT count(*) FROM intake").fetchone()[0] == 0
+
+    response = signed_in.post(
+        "/import",
+        data={"csrf_token": _csrf(signed_in)},
+        files={"file": ("hydration.json", exported, "application/json")},
+    )
+    assert response.status_code == 303
+    assert conn.execute("SELECT count(*) FROM intake").fetchone()[0] == 1
+
+
+def test_importing_a_junk_file_is_refused_without_a_traceback(signed_in):
+    response = signed_in.post(
+        "/import",
+        data={"csrf_token": _csrf(signed_in)},
+        files={"file": ("nope.json", b"{not json", "application/json")},
+    )
+    assert response.status_code in (303, 400)
+    assert response.status_code != 500

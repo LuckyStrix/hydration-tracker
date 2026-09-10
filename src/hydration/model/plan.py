@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 
 from . import constants as k
 from . import electrolytes
-from .balance import Profile, Timeline, daily_target_ml
+from .balance import Confidence, Profile, Timeline, daily_target_ml
 from .electrolytes import OverdrinkWarning, SodiumAdvice
 
 # Intervals the planner is willing to ask for, longest first. Longest that
@@ -68,6 +68,7 @@ class Plan:
     medical_flags: list[str]
     daily_target_ml: float
     daily_intake_ml: float
+    confidence: Confidence
 
     @property
     def next_dose(self) -> Dose | None:
@@ -90,6 +91,7 @@ def make_plan(
 ) -> Plan:
     now = now or timeline.final.at
     state = timeline.final
+    confidence = timeline.confidence(now)
     deficit = state.deficit_ml
     deficit_pct = profile.deficit_pct(deficit)
 
@@ -150,7 +152,7 @@ def make_plan(
         doses = []
 
     # -- assemble ----------------------------------------------------------
-    status = _status(deficit_pct, sodium, overdrink)
+    status = _status(deficit_pct, sodium, overdrink, confidence)
     daily_intake = timeline.delta("intake_ml", 24.0)
     target = daily_target_ml(
         profile,
@@ -168,7 +170,11 @@ def make_plan(
         overdrink=overdrink,
         maintenance_rate_ml_h=maintenance_rate_ml_h,
         window_h=window_h,
+        confidence=confidence,
     )
+
+    if confidence.is_stale:
+        detail.insert(0, f"Working from a guess -- {confidence.reason}.")
 
     if sodium.recommend:
         for reason in sodium.reasons:
@@ -188,9 +194,12 @@ def make_plan(
         doses=doses,
         sodium=sodium,
         overdrink=overdrink,
-        medical_flags=_medical_flags(deficit_pct, hours_since_last_void, recent_dark_voids),
+        medical_flags=_medical_flags(
+            deficit_pct, hours_since_last_void, recent_dark_voids, confidence
+        ),
         daily_target_ml=target,
         daily_intake_ml=daily_intake,
+        confidence=confidence,
     )
 
 
@@ -308,9 +317,19 @@ def _distribute_sodium(doses: list[Dose], total_mg: float) -> list[Dose]:
     ]
 
 
-def _status(deficit_pct: float, sodium: SodiumAdvice, overdrink: OverdrinkWarning | None) -> str:
+def _status(
+    deficit_pct: float,
+    sodium: SodiumAdvice,
+    overdrink: OverdrinkWarning | None,
+    confidence: Confidence,
+) -> str:
     if overdrink is not None:
         return "slow_down"
+    if confidence.is_stale:
+        # Deliberately its own state rather than being folded into 'ok'. The
+        # honest answer is that nobody knows, and a dashboard should show that
+        # differently from a checked and healthy one.
+        return "unknown"
     if deficit_pct >= k.DEFICIT_PCT_SIGNIFICANT:
         return "drink_urgent"
     if deficit_pct >= 0.5:
@@ -330,10 +349,19 @@ def _headline(
     overdrink: OverdrinkWarning | None,
     maintenance_rate_ml_h: float,
     window_h: float,
+    confidence: Confidence,
 ) -> str:
     """One line. This is what Home Assistant shows, so it has to stand alone."""
     if overdrink is not None:
         return overdrink.message
+
+    if confidence.is_stale:
+        # Ask for the cheapest thing that would fix it. A bathroom visit takes
+        # one tap and re-anchors the whole estimate.
+        return (
+            "Not enough recent data to say. Log a bathroom visit or this morning's "
+            "weight and I can tell you where you stand."
+        )
 
     def litres(ml: float) -> str:
         return f"{ml / 1000:.2f} L"
@@ -370,20 +398,31 @@ def _with_sodium(base: str, sodium: SodiumAdvice) -> str:
 
 
 def _medical_flags(
-    deficit_pct: float, hours_since_last_void: float | None, recent_dark_voids: int
+    deficit_pct: float,
+    hours_since_last_void: float | None,
+    recent_dark_voids: int,
+    confidence: Confidence,
 ) -> list[str]:
     """The few things that mean stop using an app and talk to a doctor.
 
     Deliberately short. A list that flags everything gets dismissed, and then
     it flags nothing.
+
+    Suppressed entirely when the estimate is stale. A medical warning derived
+    from a guess is a false alarm, and false alarms are how a real one gets
+    ignored -- which is the specific way this used to fail: a fortnight of not
+    logging produced an alarming deficit and a warning about it.
     """
+    if confidence.is_stale:
+        return []
+
     flags: list[str] = []
     if deficit_pct >= k.DEFICIT_PCT_SEVERE:
         flags.append(
             f"Estimated {deficit_pct:.1f}% of body mass down. Past about 3% this stops being a "
             f"training question -- if you also feel dizzy or confused, seek medical help."
         )
-    if hours_since_last_void is not None and hours_since_last_void >= 8:
+    if hours_since_last_void is not None and hours_since_last_void >= k.NO_VOID_FLAG_H:
         flags.append(
             f"No urine logged for {hours_since_last_void:.0f} hours. If that is accurate and you "
             f"feel unwell, it needs attention rather than another glass of water."

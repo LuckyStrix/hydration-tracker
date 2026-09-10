@@ -87,6 +87,30 @@ quietly wrong, which is worse. So:
 - **Errors**: `ValidationError`, `ConflictError`, `NotFound` become flash
   messages or JSON. Anything else is a real bug and should 500.
 
+- **Silence is not dehydration.** After `UNLOGGED_GRACE_H` with no manual entry,
+  the routine baseline stops being applied and the estimate relaxes toward
+  `UNLOGGED_PRIOR_PCT`. Sweat is exempt -- a synced ride is real evidence. Without
+  this the ledger reached ~20% of body mass over a fortnight and raised medical
+  flags about it. Covered by `test_silence_is_not_read_as_dehydration`.
+- **Engagement and evidence are two different signals.** Engagement (manual logs
+  only) drives the regression; evidence (manual logs *plus* activities) drives
+  the confidence level. Merging them made a hard ride read as "not enough data"
+  the moment it finished.
+- **Both fitted parameters must read an un-fitted ledger.** `sweat_calibration`
+  fits from `sweat_ml_estimated_raw`; `baseline_loss_scale` fits from a timeline
+  built with `apply_feedback=False`. Either one reading back its own influence
+  converges on a no-op and silently erases itself.
+- **The baseline fit is damped and uses the app's own lookback.** It is a
+  feedback controller: undamped it oscillated into its bounds, and fitted
+  against a different window than the app displays it moved the wrong way
+  entirely. Both are regression-tested.
+- **`build_void_contexts` runs once per simulation, not once per void.** The
+  per-void scan was O(voids x events) and cost ten seconds on a year of history.
+- **Schema changes need an entry in `db.MIGRATIONS`.** `CREATE TABLE IF NOT
+  EXISTS` does nothing to an existing table, so a new column never reaches a
+  database that already has data. Append, never reorder, and always give a
+  DEFAULT.
+
 ## Things that will bite you
 
 - **Garmin is somebody else's private API.** `providers/garmin.py` searches

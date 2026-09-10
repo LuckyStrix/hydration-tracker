@@ -42,6 +42,10 @@ def frictionless(monkeypatch, profile: B.Profile) -> B.Profile:
     monkeypatch.setattr(k, "FECAL_ML_PER_DAY", 0.0)
     monkeypatch.setattr(k, "METABOLIC_WATER_ML_PER_KCAL", 0.0)
     monkeypatch.setattr(k, "MAX_DIURESIS_ML_PER_MIN", 0.0)
+    # Also assume the log is being kept, so the regression toward the
+    # no-evidence prior never fires. These tests check a single term against
+    # exact arithmetic; that term is checked on its own further down.
+    monkeypatch.setattr(k, "UNLOGGED_GRACE_H", 1e6)
     return B.Profile(**{**profile.__dict__, "food_water_ml_day": 0.0})
 
 
@@ -124,10 +128,53 @@ def test_absorption_never_exceeds_the_hourly_cap(frictionless, noon):
 # -- losses ----------------------------------------------------------------
 
 def test_drinking_nothing_builds_a_deficit(profile, noon):
-    """A day of nothing costs about a litre. That is the obligatory urine plus
-    insensible loss, less what food and metabolism give back."""
-    timeline = B.simulate(profile, [], start=noon, end=noon + timedelta(hours=24))
+    """A day of nothing costs about a litre -- obligatory urine plus insensible
+    loss, less what food and metabolism give back.
+
+    The voids are here so the log counts as being kept: an empty event stream
+    means 'stopped logging', and the ledger correctly stops believing it drank
+    nothing. Observers are off so only the loss terms are under test.
+    """
+    keeping_the_log = [
+        B.VoidEvent(at=noon + timedelta(hours=h), colour=4) for h in range(0, 24, 4)
+    ]
+    timeline = B.simulate(
+        profile, keeping_the_log, start=noon, end=noon + timedelta(hours=24), apply_observers=False
+    )
     assert 800.0 < timeline.final.deficit_ml < 1400.0
+
+
+def test_silence_is_not_read_as_dehydration(profile, noon):
+    """The failure this whole mechanism exists to prevent.
+
+    An unbounded ledger reached nearly 20% of body mass over a fortnight of
+    not logging -- a figure nobody survives -- and then raised medical warnings
+    about it. Going quiet must converge on an ordinary day, and say so.
+    """
+    for days in (7, 14, 60):
+        timeline = B.simulate(profile, [], start=noon - timedelta(days=days), end=noon)
+        pct = profile.deficit_pct(timeline.final.deficit_ml)
+        assert 0.0 < pct < 1.0, f"{days} days of silence read as {pct:.1f}% of body mass"
+        assert timeline.confidence().is_stale
+
+
+def test_a_synced_ride_is_still_believed_during_a_quiet_stretch(profile, noon):
+    """Sweat is externally evidenced. Assuming you drank normally does not mean
+    assuming you did not ride."""
+    ride = [B.ActivityEvent(at=noon - timedelta(hours=3), duration_s=5400, sweat_ml=2000, kcal=1300)]
+    timeline = B.simulate(profile, ride, start=noon - timedelta(days=7), end=noon)
+    assert timeline.final.deficit_ml > 1800.0
+    assert not timeline.confidence().is_stale, "a ride three hours ago is recent evidence"
+
+
+def test_the_deficit_cannot_reach_impossible_values(profile, noon):
+    """A backstop, not a model. Past ~6% of body mass a person is in hospital."""
+    brutal = [
+        B.ActivityEvent(at=noon + timedelta(hours=h), duration_s=7200, sweat_ml=4000, kcal=2500)
+        for h in range(0, 20, 3)
+    ]
+    timeline = B.simulate(profile, brutal, start=noon, end=noon + timedelta(hours=24))
+    assert profile.deficit_pct(timeline.final.deficit_ml) <= k.MAX_DEFICIT_PCT + 0.01
 
 
 def test_surplus_is_shed_rather_than_banked(profile, noon):
@@ -424,7 +471,10 @@ def test_nothing_is_scheduled_close_to_bedtime(profile):
     """An app that costs you sleep to fix a rounding error has made your day
     worse."""
     late = datetime(2026, 9, 10, 22, 15, tzinfo=profile.tz).astimezone(UTC)
-    result = _plan_for(profile, [], now=late)
+    # A recent drink, so the estimate is current rather than a guess -- this
+    # test is about the bedtime rule, not about staleness.
+    recent = [B.IntakeEvent(at=late - timedelta(minutes=30), volume_ml=200.0)]
+    result = _plan_for(profile, recent, now=late)
     assert result.doses == []
     assert "bedtime" in result.headline.lower()
 
@@ -510,7 +560,7 @@ def test_the_headline_stands_alone(profile):
 
 def test_medical_flags_are_rare_and_specific(profile):
     now = datetime(2026, 9, 10, 13, 0, tzinfo=profile.tz).astimezone(UTC)
-    quiet = _plan_for(profile, [], now=now)
+    quiet = _plan_for(profile, [B.IntakeEvent(at=now - timedelta(hours=1), volume_ml=400.0)], now=now)
     assert quiet.medical_flags == []
 
     bad = _plan_for(
@@ -518,15 +568,92 @@ def test_medical_flags_are_rare_and_specific(profile):
         [B.ActivityEvent(at=now - timedelta(hours=4), duration_s=14400, sweat_ml=4500, kcal=3000)],
         now=now,
         hours=10.0,
-        hours_since_last_void=9.0,
+        hours_since_last_void=14.0,
     )
     assert len(bad.medical_flags) == 2
+
+
+def test_a_normal_night_of_sleep_is_not_a_medical_flag(profile):
+    """Eight hours without passing urine is called 'asleep'. Flagging it every
+    morning is how a warning stops being read."""
+    now = datetime(2026, 9, 10, 7, 30, tzinfo=profile.tz).astimezone(UTC)
+    result = _plan_for(profile, [], now=now, hours_since_last_void=9.0)
+    assert result.medical_flags == []
+
+
+def test_a_guess_never_raises_a_medical_flag(profile):
+    """A warning derived from no data is a false alarm, and false alarms are
+    how a real one gets ignored."""
+    now = datetime(2026, 9, 10, 13, 0, tzinfo=profile.tz).astimezone(UTC)
+    stale = _plan_for(profile, [], now=now, hours_since_last_void=30.0)
+    assert stale.confidence.is_stale
+    assert stale.medical_flags == []
+    assert stale.status == "unknown"
+    assert "not enough recent data" in stale.headline.lower()
 
 
 def test_status_is_one_of_the_documented_tokens(profile):
     """Home Assistant colours a card from this, so a new value must be a
     deliberate change, not a typo."""
     now = datetime(2026, 9, 10, 13, 0, tzinfo=profile.tz).astimezone(UTC)
-    allowed = {"ok", "drink", "drink_urgent", "add_sodium", "slow_down"}
+    allowed = {"ok", "drink", "drink_urgent", "add_sodium", "slow_down", "unknown"}
     for events in ([], [B.ActivityEvent(at=now - timedelta(hours=2), duration_s=5400, sweat_ml=2100, kcal=1400)]):
         assert _plan_for(profile, events, now=now).status in allowed
+
+
+# -- guarding the one unbounded input --------------------------------------
+
+def test_garmins_reported_sweat_is_bounded_before_it_is_believed():
+    """It arrives from an undocumented API whose units are not ours to rely on.
+    A single litres-for-millilitres change would otherwise put a 1500 litre
+    sweat loss straight into the ledger."""
+    absurd = sweat.resolve_sweat(
+        measured_ml=None, reported_ml=1_500_000, estimated_ml=1200, duration_s=3600
+    )
+    assert absurd.source == "estimated", "an impossible figure must not win"
+    assert absurd.ml == 1200
+    assert absurd.reported_ml == 1_500_000, "but it is still recorded, for the comparison"
+
+    sane = sweat.resolve_sweat(
+        measured_ml=None, reported_ml=1500, estimated_ml=1200, duration_s=3600
+    )
+    assert sane.source == "garmin"
+
+
+# -- subjective feedback as a third observer -------------------------------
+
+def test_how_the_day_felt_moves_the_ledger(profile, noon):
+    def deficit_after(verdict: str) -> float:
+        events = [B.FeedbackEvent(at=noon + timedelta(hours=1), verdict=verdict)]
+        return B.simulate(profile, events, start=noon, end=noon + timedelta(hours=2)).final.deficit_ml
+
+    assert deficit_after("very_dry") > deficit_after("about_right") > deficit_after("waterlogged")
+
+
+def test_a_single_day_of_feeling_is_not_authoritative(profile, noon):
+    """It is one impression, not a measurement. It should nudge, not overrule."""
+    events = [B.ActivityEvent(at=noon, duration_s=5400, sweat_ml=2500, kcal=1500),
+              B.FeedbackEvent(at=noon + timedelta(hours=3), verdict="about_right")]
+    timeline = B.simulate(profile, events, start=noon, end=noon + timedelta(hours=4))
+    correction = next(c for c in timeline.corrections if c.kind == "feedback")
+    assert correction.confidence == k.TRUST_FEEDBACK
+    assert abs(correction.shift_ml) < abs(correction.ledger_ml - correction.observed_ml)
+
+
+def test_an_unknown_verdict_is_ignored_rather_than_crashing(profile, noon):
+    events = [B.FeedbackEvent(at=noon + timedelta(hours=1), verdict="ecstatic")]
+    timeline = B.simulate(profile, events, start=noon, end=noon + timedelta(hours=2))
+    assert not [c for c in timeline.corrections if c.kind == "feedback"]
+
+
+def test_a_higher_baseline_scale_costs_more_water(profile, noon):
+    """What the fitted scale actually does: change what the model expects of an
+    ordinary day."""
+    def deficit(scale: float) -> float:
+        p = B.Profile(**{**profile.__dict__, "baseline_loss_scale": scale})
+        keeping_the_log = [B.VoidEvent(at=noon + timedelta(hours=h), colour=4) for h in range(0, 24, 4)]
+        return B.simulate(
+            p, keeping_the_log, start=noon, end=noon + timedelta(hours=24), apply_observers=False
+        ).final.deficit_ml
+
+    assert deficit(1.25) > deficit(1.0) > deficit(0.8)

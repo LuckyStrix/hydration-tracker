@@ -228,6 +228,62 @@ and an intercept would let one short activity drag the line. Bounded to
 
 ---
 
+## Running without evidence
+
+A ledger cannot, on its own, tell **"I did not drink"** from **"I did not log"**.
+Left alone it integrates the first reading indefinitely, and the result is a
+tracker that responds to a week's holiday by reporting a deficit nobody could
+survive — and then raising medical warnings about it.
+
+Three mechanisms handle this.
+
+**Regression to an ordinary day.** Six hours after the last log of any kind, the
+routine background of the day — insensible loss, obligatory urine, food water,
+metabolic water — stops being applied, and the estimate relaxes toward a mild
+0.5% deficit with a 12-hour half-life. The reasoning is that a person with
+access to water does not passively dehydrate; thirst is a real and effective
+regulator, so in the absence of evidence the honest prior is "probably drinking
+normally" rather than "still not drinking".
+
+Two details make this work rather than merely bound the number:
+
+- It is keyed on the last log of **any** kind, not on drinks. While you are
+  keeping the log, an absence of drinks means you did not drink, and that is
+  believed.
+- **Sweat is never regressed away.** A ride Garmin synced is real evidence of
+  fluid lost whether or not anyone was logging, so it survives intact.
+
+| Days without logging | Before | Now |
+|---|---|---|
+| 1 | +1.4% | +0.40% |
+| 7 | +9.9% | +0.50% |
+| 14 | +19.8% | +0.50% |
+| 60 | (unbounded) | +0.50% |
+
+**Hard bounds** at −2.5% and +6% of body mass, as a backstop rather than a
+model. Past 6% a person is in hospital, not reading a dashboard.
+
+**A confidence level**, so the application can say it does not know:
+
+| Level | When |
+|---|---|
+| `good` | An observation corrected the ledger within 12 h |
+| `fair` | An observation within 36 h, or other real input within 6 h |
+| `stale` | Neither |
+
+While stale the status becomes `unknown`, the headline asks for the cheapest
+thing that would fix it — a bathroom visit re-anchors everything — and **medical
+flags are suppressed entirely**. A warning derived from a guess is a false
+alarm, and false alarms are how a real one gets ignored.
+
+Note the deliberate split between two questions that look like one. *Are you
+still keeping the log?* drives the regression, and only manual entries answer
+it. *Is there recent real input?* drives the confidence, and a synced activity
+answers that too. Conflating them made a hard ride read as "not enough data"
+moments after it finished.
+
+---
+
 ## Observers
 
 ### Urine colour, weighted by timing
@@ -275,6 +331,37 @@ mid-afternoon sample and by **0.12 L** taken right after a big drink.
 Note that the first-morning case gets **two** separate corrections — read one
 shade lighter *and* trusted less. Those are two different problems: the reading
 is biased dark, and it is also noisy.
+
+### How the day felt
+
+The end-of-day question — waterlogged, a bit much, about right, a bit dry, very
+dry — is a third observer, trusted at 0.3. You can see things no sensor here
+reaches: thirst, a dull head, the particular flatness of being behind.
+
+`about_right` maps to +0.3% rather than zero, because feeling fine is not the
+same as being in perfect balance, and anchoring "fine" at zero would bias the
+whole fit wet.
+
+Separately, a run of answers **fits the baseline itself**. Each verdict is
+compared against what the ledger believed at that moment, and a consistent
+residual scales insensible loss and obligatory urine together, bounded to
+[0.7, 1.4]. That is the "fundamental shift": an offset on the deficit would be
+undone by the next observation, whereas changing what the model expects of an
+ordinary day persists.
+
+Three things that are easy to get wrong here, and were:
+
+- **The fit reads a ledger simulated without feedback applied.** Otherwise each
+  re-fit measures its own echo — the same trap the sweat calibration needed
+  rescuing from.
+- **It is damped**, at 35% of the indicated correction. The ledger it measures
+  against already contains the multiplier being fitted, which makes this a
+  feedback controller; at unity gain it oscillates. Six identical "a bit dry"
+  answers — which should *raise* the baseline — drove it into its own floor.
+- **It uses the same lookback window the application displays.** A verdict is a
+  reply to a number you were shown. Fitted against a one-day window while the
+  app showed a three-day one, the two disagreed by 2.2 L on real data and the
+  baseline moved confidently the wrong way.
 
 ### Morning weight
 

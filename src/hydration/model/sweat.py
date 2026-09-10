@@ -171,16 +171,25 @@ def resolve_sweat(
     measured_ml: float | None,
     reported_ml: float | None,
     estimated_ml: float | None,
+    duration_s: float | None = None,
 ) -> SweatResolution:
     """Pick the best available sweat figure.
 
     A pre/post weight pair is an actual measurement of fluid lost and beats
     both models. Garmin's own number comes next: it has the heart rate trace
     and the device's own temperature, which we do not. Ours is the fallback.
+
+    Garmin's figure is bounded before it is believed. It arrives from an
+    undocumented API whose field names and units are not ours to rely on, and
+    an unbounded one is a single unit change away from putting a 1500 litre
+    sweat loss into the ledger. Our own estimate and a weight pair are already
+    bounds-checked; this closes the last way in.
     """
+    hours = (duration_s or 0) / 3600.0
+    ceiling_ml = k.MAX_SWEAT_RATE_ML_PER_H * (hours + 1.0)
     if measured_ml is not None and measured_ml >= 0:
         chosen, source = measured_ml, "measured"
-    elif reported_ml is not None and reported_ml > 0:
+    elif reported_ml is not None and 0 < reported_ml <= ceiling_ml:
         chosen, source = reported_ml, "garmin"
     elif estimated_ml is not None and estimated_ml > 0:
         chosen, source = estimated_ml, "estimated"

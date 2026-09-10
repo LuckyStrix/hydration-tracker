@@ -126,11 +126,41 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 
 # -- schema ----------------------------------------------------------------
 
+# Columns added after the first release. `CREATE TABLE IF NOT EXISTS` does
+# nothing to a table that already exists, so a database created by an earlier
+# version keeps its old shape and the application starts failing on a column
+# that is missing. SQLite has no "ADD COLUMN IF NOT EXISTS", so each one is
+# checked and added.
+#
+# Append here; never edit or reorder. Every entry must carry a DEFAULT, because
+# it is being added to a table that already has rows in it.
+MIGRATIONS: tuple[tuple[str, str, str], ...] = (
+    ("profile", "baseline_loss_scale", "REAL NOT NULL DEFAULT 1.0"),
+    ("profile", "feedback_n", "INTEGER NOT NULL DEFAULT 0"),
+    ("activity", "sweat_ml_estimated_raw", "REAL"),
+    ("activity", "ended_at", "TEXT NOT NULL DEFAULT ''"),
+)
+
+
 def init(connection: sqlite3.Connection) -> None:
-    """Create the schema and seed it. Safe to run on every start."""
+    """Create the schema, bring an older one up to date, and seed it.
+
+    Safe to run on every start, which is what makes upgrading the container a
+    matter of pulling and restarting.
+    """
     connection.executescript(SCHEMA_PATH.read_text())
+    _migrate(connection)
     _seed_profile(connection)
     _seed_beverages(connection)
+
+
+def _migrate(connection: sqlite3.Connection) -> None:
+    for table, column, definition in MIGRATIONS:
+        existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+        if not existing:
+            continue  # the table itself is new; the schema script just made it
+        if column not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _seed_profile(connection: sqlite3.Connection) -> None:

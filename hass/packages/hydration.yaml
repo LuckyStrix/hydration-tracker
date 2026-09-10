@@ -66,6 +66,15 @@ rest_command:
       {"temp_f": {{ temp_f }}, "humidity": {{ humidity }},
        "location": "{{ location | default('indoor') }}", "source": "hass"}
 
+  hydration_log_feel:
+    url: "{{ states('input_text.hydration_host') }}/api/v1/feel"
+    method: post
+    content_type: "application/json"
+    headers:
+      authorization: !secret hydration_auth
+    payload: >-
+      {"verdict": "{{ verdict }}", "source": "hass"}
+
   hydration_log_symptom:
     url: "{{ states('input_text.hydration_host') }}/api/v1/symptom"
     method: post
@@ -203,6 +212,20 @@ script:
           entity_id: sensor.hydration_plan
 
   # Handy for an NFC tag on the fridge: one tap, half a litre of water, done.
+  hydration_submit_feel:
+    alias: Log how the day felt
+    fields:
+      verdict:
+        description: waterlogged, a_bit_much, about_right, a_bit_dry or very_dry
+        example: about_right
+    sequence:
+      - service: rest_command.hydration_log_feel
+        data:
+          verdict: "{{ verdict }}"
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.hydration_plan
+
   hydration_quick_water:
     alias: Log 0.5 L of water
     sequence:
