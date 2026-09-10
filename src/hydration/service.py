@@ -14,8 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from . import db
@@ -209,7 +208,17 @@ def log_weight(
             """,
             (moment, mass_kg, context, activity_id, source, db.utcnow()),
         )
-        return cursor.lastrowid
+        row_id = cursor.lastrowid
+
+    # A pre/post pair is a measurement of one session's sweat loss, and it
+    # almost always lands after the session is already in the table -- Garmin
+    # syncs within minutes, the scale reading arrives when you get to it.
+    # `record_activity` works the measurement out at insert time, so without
+    # this the pair would sit there contributing nothing.
+    if context in {"pre_activity", "post_activity"}:
+        if refresh_activity_sweat(connection, db.from_iso(moment)) is not None:
+            refit_sweat_calibration(connection)
+    return row_id
 
 
 def log_environment(
@@ -353,7 +362,7 @@ def refit_baseline_scale(connection: sqlite3.Connection) -> tuple[float, int]:
 
     residuals = [
         profile.pct_to_ml(k.FEEDBACK_DEFICIT_PCT[row["verdict"]]) - timeline.at(moment).deficit_ml
-        for row, moment in zip(rows, moments)
+        for row, moment in zip(rows, moments, strict=True)  # built from the same rows
     ]
     mean_residual = sum(residuals) / len(residuals)
 
@@ -428,10 +437,21 @@ def record_activity(
     a sweat loss that never happened, every fifteen minutes, forever.
     """
     profile = load_profile(connection)
-    moment = db.to_iso(started_at)
+    moment = _validated_time(started_at)
 
     if temp_c is None or humidity_pct is None:
-        temp_c, humidity_pct = _conditions_at(connection, started_at, profile, prefer="outdoor")
+        # Filled in field by field, not both at once. Garmin reports a ride
+        # temperature and never a humidity, so replacing the pair because one
+        # was missing threw away the only reading actually taken where the
+        # sweating happened and substituted the sensor in the hallway at home.
+        # Temperature is the input the heat-fraction anchors move most on.
+        fallback_temp_c, fallback_humidity_pct = _conditions_at(
+            connection, started_at, profile, prefer="outdoor"
+        )
+        if temp_c is None:
+            temp_c = fallback_temp_c
+        if humidity_pct is None:
+            humidity_pct = fallback_humidity_pct
 
     # Computed twice, deliberately. The raw figure is the population model with
     # no personal factor; the calibrated one is what this person's own weighed
@@ -490,6 +510,23 @@ def record_activity(
                 "SELECT id FROM activity WHERE provider = ? AND external_id = ?",
                 (provider, external_id),
             ).fetchone()
+        else:
+            # Nothing to be idempotent on. A hand-logged session has no
+            # external id, so the unique index cannot catch a double submit --
+            # and two copies of a ride is two copies of its sweat, straight
+            # into the ledger. Same provider, same start is the natural key.
+            clash = connection.execute(
+                """
+                SELECT id FROM activity
+                WHERE provider = ? AND external_id IS NULL AND started_at = ? AND voided_at IS NULL
+                """,
+                (provider, moment),
+            ).fetchone()
+            if clash is not None:
+                raise ConflictError(
+                    "an activity starting at that time is already recorded; "
+                    "retract it first if you meant to replace it"
+                )
         if existing is not None:
             assignments = ", ".join(f"{name_} = :{name_}" for name_ in payload if name_ != "created_at")
             connection.execute(
@@ -502,6 +539,60 @@ def record_activity(
             f"INSERT INTO activity ({columns}) VALUES ({placeholders})", payload
         )
         return cursor.lastrowid
+
+
+def log_manual_activity(connection: sqlite3.Connection, **fields) -> int:
+    """Record a session typed in by hand, and re-fit the calibration from it.
+
+    The Garmin sync re-fits once at the end of its run, which is the right
+    place for it: thirty activities, one fit. A hand-logged session has no such
+    moment, and without one the personal sweat factor stayed at 1.0 forever for
+    anyone not syncing from Garmin -- however many sessions they weighed.
+    """
+    activity_id = record_activity(connection, provider="manual", **fields)
+    refit_sweat_calibration(connection)
+    return activity_id
+
+
+def refresh_activity_sweat(connection: sqlite3.Connection, moment: datetime) -> int | None:
+    """Recompute the sweat figures of whichever activity a weighing belongs to.
+
+    Returns the activity's id if one was found and updated, otherwise None.
+    The window matches `_measured_sweat_ml`: a weighing within three quarters
+    of an hour of either end of a session is part of that session.
+    """
+    row = connection.execute(
+        """
+        SELECT * FROM activity
+        WHERE voided_at IS NULL AND ended_at >= ? AND started_at <= ?
+        ORDER BY started_at DESC LIMIT 1
+        """,
+        (db.to_iso(moment - timedelta(minutes=45)), db.to_iso(moment + timedelta(minutes=45))),
+    ).fetchone()
+    if row is None:
+        return None
+
+    measured = _measured_sweat_ml(
+        connection, db.from_iso(row["started_at"]), row["duration_s"], row["fluid_consumed_ml"]
+    )
+    if measured is None and row["sweat_ml_measured"] is None:
+        return None  # still only half a pair
+
+    resolution = sweat_model.resolve_sweat(
+        measured_ml=measured,
+        reported_ml=row["sweat_ml_reported"],
+        estimated_ml=row["sweat_ml_estimated"],
+        duration_s=row["duration_s"],
+    )
+    with db.transaction(connection):
+        connection.execute(
+            """
+            UPDATE activity SET sweat_ml_measured = ?, sweat_ml_used = ?, sweat_source = ?
+            WHERE id = ?
+            """,
+            (measured, resolution.ml, resolution.source, row["id"]),
+        )
+    return row["id"]
 
 
 def _measured_sweat_ml(
@@ -816,18 +907,66 @@ def _recent_symptoms(connection: sqlite3.Connection, now: datetime) -> tuple[str
     return tuple(row["kind"] for row in rows)
 
 
+def intake_ml_on(connection: sqlite3.Connection, day: date, tz: ZoneInfo) -> float:
+    """Total fluid logged on one local day.
+
+    Local, not UTC: "how much have I drunk today" is a question about the day
+    you are living in, and for a US evening the UTC day has already rolled over.
+    """
+    start = datetime.combine(day, time.min, tzinfo=tz)
+    row = connection.execute(
+        """
+        SELECT COALESCE(SUM(volume_ml), 0) AS total FROM intake
+        WHERE voided_at IS NULL AND at >= ? AND at < ?
+        """,
+        (db.to_iso(start), db.to_iso(start + timedelta(days=1))),
+    ).fetchone()
+    return float(row["total"])
+
+
 # -- recommendations -------------------------------------------------------
 
-def record_recommendation(connection: sqlite3.Connection, plan: P.Plan) -> bool:
-    """Store the plan if the headline has actually changed.
+RECOMMENDATION_MIN_CHANGE_ML = 150.0
+RECOMMENDATION_MIN_SODIUM_CHANGE_MG = 100.0
+"""How far the advice has to move before it is a different piece of advice.
 
-    Writing one every time the page is refreshed would bury the history in
-    duplicates and make 'what was I told today' unreadable.
+Below these it is the same recommendation, rephrased -- and the history is for
+answering "what was I told, and did following it help", which a row every
+minute makes impossible to read.
+"""
+
+
+def _materially_different(latest: sqlite3.Row, plan: P.Plan) -> bool:
+    """Is this a different piece of advice, or the same one said again?
+
+    Compared on substance rather than on the rendered headline. The headline
+    carries a clock time -- "...every 20 min until 5:40 PM" -- which advances
+    with the wall clock, so *every* headline differs from the one a minute
+    before it. Home Assistant polls `/api/v1/status` once a minute, and
+    comparing the strings therefore wrote 1440 rows a day: precisely the
+    duplicate-burial this check exists to prevent, arriving through the door it
+    was watching.
+    """
+    if latest["status"] != plan.status:
+        return True
+    if abs(latest["deficit_ml"] - plan.deficit_ml) >= RECOMMENDATION_MIN_CHANGE_ML:
+        return True
+    if abs(latest["sodium_mg"] - plan.sodium.recommended_mg) >= RECOMMENDATION_MIN_SODIUM_CHANGE_MG:
+        return True
+    return False
+
+
+def record_recommendation(connection: sqlite3.Connection, plan: P.Plan) -> bool:
+    """Store the plan if the advice has actually changed.
+
+    Writing one every time the page is refreshed -- or every time Home
+    Assistant polls -- would bury the history in duplicates and make 'what was
+    I told today' unreadable.
     """
     latest = connection.execute(
-        "SELECT headline FROM recommendation ORDER BY at DESC LIMIT 1"
+        "SELECT status, deficit_ml, sodium_mg FROM recommendation ORDER BY at DESC LIMIT 1"
     ).fetchone()
-    if latest is not None and latest["headline"] == plan.headline:
+    if latest is not None and not _materially_different(latest, plan):
         return False
     with db.transaction(connection):
         connection.execute(

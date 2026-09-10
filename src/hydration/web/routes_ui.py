@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from .. import charts, config, db, portability, reports, service, units
+from .. import charts, config, portability, reports, service, units
 from ..errors import ValidationError
 from ..model import plan as P
 from . import deps
@@ -219,7 +219,9 @@ def log_activity(
     if started is None:
         raise ValidationError("when did it start?")
     sweat_litres = units.parse_optional_float(sweat_l)
-    service.record_activity(
+    # Not `record_activity` directly: a hand-logged session is the one path
+    # with no sync run behind it to re-fit the calibration afterwards.
+    service.log_manual_activity(
         conn,
         started_at=started,
         duration_s=duration_min * 60.0,
@@ -288,7 +290,7 @@ async def import_data(request: Request):
         raise ValidationError("choose a file to import")
 
     raw = await upload.read()
-    if len(raw) > 64 * 1024 * 1024:
+    if len(raw) > config.IMPORT_MAX_BODY_BYTES:
         raise ValidationError("that file is larger than this importer will accept")
 
     payload = portability.parse_export(raw)
@@ -318,7 +320,10 @@ def history(request: Request, days: int = 14):
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=days)
     timeline = service.timeline_for(conn, start=start, end=end)
-    summaries = reports.daily_summaries(conn, start, end, tz)
+    # `days` bars, not `days + 1`: the ledger runs a full `days` back, but the
+    # bars are whole local days, and "the last 14 days" means today plus the
+    # thirteen before it rather than a fourteenth stub at the far end.
+    summaries = reports.daily_summaries(conn, end - timedelta(days=days - 1), end, tz)
 
     return deps.render(
         request,

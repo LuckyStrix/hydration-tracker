@@ -194,7 +194,7 @@ def deficit_chart(timeline, corrections, tz: ZoneInfo, *, body_mass_kg: float) -
         f'x2="{box.width - box.right}" y2="{y_of(0):.1f}"/>'
     )
 
-    points = " ".join(f"{x_of(s.at):.1f},{y_of(pct):.1f}" for s, pct in zip(samples, values_pct))
+    points = " ".join(f"{x_of(s.at):.1f},{y_of(pct):.1f}" for s, pct in zip(samples, values_pct, strict=True))
     parts.append(f'<polyline class="series-1-line" points="{points}"/>')
 
     for correction in corrections:

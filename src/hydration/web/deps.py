@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from fastapi import Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from pathlib import Path
 
@@ -140,9 +140,7 @@ def _duration(seconds: float | None) -> str:
 templates = _make_environment()
 
 
-def render(request: Request, name: str, **context) -> "HTMLResponse":
-    from fastapi.responses import HTMLResponse
-
+def render(request: Request, name: str, **context) -> HTMLResponse:
     conn = connection()
     set_display_timezone(profile_timezone(conn))
     session_id = request.cookies.get(config.SESSION_COOKIE)

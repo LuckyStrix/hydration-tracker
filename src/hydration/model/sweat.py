@@ -74,7 +74,7 @@ def heat_fraction(temp_c: float) -> float:
         return points[0][1]
     if temp_c >= points[-1][0]:
         return points[-1][1]
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+    for (x0, y0), (x1, y1) in zip(points, points[1:], strict=False):  # pairwise, so uneven
         if x0 <= temp_c <= x1:
             return y0 + (y1 - y0) * (temp_c - x0) / (x1 - x0)
     return k.HEAT_FRACTION_TEMPERATE

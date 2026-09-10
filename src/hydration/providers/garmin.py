@@ -25,7 +25,7 @@ sync afterwards refreshes them on its own.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Iterable
 
 from .. import config
@@ -112,32 +112,49 @@ def _refuse_mfa() -> str:
 
 SWEAT_KEYS = ("sweatLoss", "sweatLossInML", "waterEstimated", "estimatedSweatLoss")
 FLUID_KEYS = ("waterConsumed", "fluidConsumed", "waterIntake")
-TEMP_KEYS = ("temperature", "airTemperature", "minTemperature", "avgTemperature")
+TEMP_KEYS = ("avgTemperature", "temperature", "airTemperature", "minTemperature")
+"""Average first. `minTemperature` sitting ahead of it meant a ride that
+started cold was estimated at its coldest moment for its whole length."""
+
+HUMIDITY_KEYS = ("humidity", "relativeHumidity", "avgHumidity", "averageHumidity")
+"""Garmin rarely carries humidity, but when it does it belongs to the ride
+rather than to the sensor in the hallway at home. Absent it, `record_activity`
+falls back per field -- which is why this being empty no longer costs us the
+temperature as well."""
+
 KCAL_KEYS = ("calories", "activeKilocalories", "kilocalories")
 HR_KEYS = ("averageHR", "avgHr", "averageHeartRate")
 
 
-def _find_number(payload: Any, keys: tuple[str, ...], depth: int = 6) -> float | None:
+def _find_number(
+    payload: Any, keys: tuple[str, ...], depth: int = 6, *, positive_only: bool = True
+) -> float | None:
     """Search a nested payload for the first of `keys` holding a number.
 
     Garmin puts the same value under `summaryDTO` on one endpoint and at the
     top level on another, and moves it again for some activity types. Walking
     for the key is uglier than a fixed path and survives a great deal more.
+
+    `positive_only` treats a zero or a negative as "not really there", which is
+    right for calories and sweat -- Garmin pads missing numbers with 0 -- and
+    wrong for temperature, where sub-zero is a real reading and a winter ride
+    is exactly when the sweat estimate should differ most.
     """
     if depth < 0 or payload is None:
         return None
     if isinstance(payload, dict):
         for key in keys:
             value = payload.get(key)
-            if isinstance(value, (int, float)) and value > 0:
-                return float(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                if not positive_only or value > 0:
+                    return float(value)
         for value in payload.values():
-            found = _find_number(value, keys, depth - 1)
+            found = _find_number(value, keys, depth - 1, positive_only=positive_only)
             if found is not None:
                 return found
     elif isinstance(payload, list):
         for item in payload[:20]:
-            found = _find_number(item, keys, depth - 1)
+            found = _find_number(item, keys, depth - 1, positive_only=positive_only)
             if found is not None:
                 return found
     return None
@@ -181,7 +198,8 @@ def _activity_from(summary: dict, detail: dict | None) -> Activity | None:
         avg_hr=_find_number(merged, HR_KEYS),
         sweat_ml=_find_number(merged, SWEAT_KEYS),
         fluid_consumed_ml=_find_number(merged, FLUID_KEYS) or 0.0,
-        temp_c=_find_number(merged, TEMP_KEYS),
+        temp_c=_find_number(merged, TEMP_KEYS, positive_only=False),
+        humidity_pct=_find_number(merged, HUMIDITY_KEYS),
         raw={"summary": summary},
     )
 

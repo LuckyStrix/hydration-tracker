@@ -134,11 +134,37 @@ def transaction(connection: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
 #
 # Append here; never edit or reorder. Every entry must carry a DEFAULT, because
 # it is being added to a table that already has rows in it.
-MIGRATIONS: tuple[tuple[str, str, str], ...] = (
-    ("profile", "baseline_loss_scale", "REAL NOT NULL DEFAULT 1.0"),
-    ("profile", "feedback_n", "INTEGER NOT NULL DEFAULT 0"),
-    ("activity", "sweat_ml_estimated_raw", "REAL"),
-    ("activity", "ended_at", "TEXT NOT NULL DEFAULT ''"),
+#
+# The fourth element is a backfill: a DEFAULT gets the column onto the table,
+# but a default is not always a *correct* value for the rows already there. A
+# column whose default is a placeholder needs one of these, or the upgrade
+# leaves real rows holding a value that reads as valid and behaves as garbage.
+# `activity.ended_at` is the case that taught this: it arrived defaulted to the
+# empty string, which every range query silently sorts below every real
+# timestamp, so every activity logged before the upgrade dropped out of the
+# ledger without a word.
+MIGRATIONS: tuple[tuple[str, str, str, str | None], ...] = (
+    ("profile", "baseline_loss_scale", "REAL NOT NULL DEFAULT 1.0", None),
+    ("profile", "feedback_n", "INTEGER NOT NULL DEFAULT 0", None),
+    ("activity", "sweat_ml_estimated_raw", "REAL", None),
+    (
+        "activity",
+        "ended_at",
+        "TEXT NOT NULL DEFAULT ''",
+        # ISO-8601 with the T and the zone, assembled by hand. SQLite's own
+        # datetime() emits '2026-06-15 11:00:00' -- a space, no zone -- which
+        # does not compare against the strings every other timestamp here uses.
+        # Building the format explicitly is the whole point.
+        """
+        UPDATE activity
+           SET ended_at = strftime(
+                   '%Y-%m-%dT%H:%M:%S',
+                   started_at,
+                   '+' || CAST(duration_s AS INTEGER) || ' seconds'
+               ) || '+00:00'
+         WHERE ended_at IS NULL OR ended_at = ''
+        """,
+    ),
 )
 
 
@@ -155,12 +181,19 @@ def init(connection: sqlite3.Connection) -> None:
 
 
 def _migrate(connection: sqlite3.Connection) -> None:
-    for table, column, definition in MIGRATIONS:
+    for table, column, definition, backfill in MIGRATIONS:
         existing = {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
         if not existing:
             continue  # the table itself is new; the schema script just made it
         if column not in existing:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        if backfill is not None:
+            # Run on every start, not only on the start that adds the column.
+            # Each backfill is written to match only rows still holding the
+            # placeholder, so repeating it costs one scan and changes nothing
+            # -- and a database that already took an earlier, backfill-less
+            # version of this migration is repaired rather than left broken.
+            connection.execute(backfill)
 
 
 def _seed_profile(connection: sqlite3.Connection) -> None:
@@ -273,3 +306,117 @@ def backup(connection: sqlite3.Connection, destination: str | Path) -> Path:
         raise FileExistsError(f"{target} already exists; refusing to overwrite a backup")
     connection.execute("VACUUM INTO ?", (str(target),))
     return target
+
+
+BACKUP_GLOB = "hydration-*.db"
+"""What `hydration backup` names its files, and therefore the only files
+pruning will consider. Anything else in the directory was put there by a
+person and is not ours to delete."""
+
+
+def prune_backups(directory: str | Path, keep: int) -> list[Path]:
+    """Delete all but the newest `keep` backups. Returns what was removed.
+
+    Backups are written and never touched again, so without this the directory
+    grows forever -- and a full disk is a database that cannot be written to,
+    which is a strange way for a hydration log to end.
+
+    Sorted by name rather than by mtime: the names carry a sortable UTC stamp,
+    and a file's mtime is whatever the last thing to touch it decided.
+    """
+    if keep < 1:
+        raise ValueError("keep at least one backup")
+    existing = sorted(Path(directory).glob(BACKUP_GLOB))
+    doomed = existing[: max(0, len(existing) - keep)]
+    for path in doomed:
+        path.unlink()
+    return doomed
+
+
+REQUIRED_TABLES = frozenset({"profile", "intake", "void", "body_weight", "activity"})
+"""Enough of the schema to tell a backup of this application from some other
+SQLite file that happens to be lying in the backup directory."""
+
+
+class NotABackup(ValueError):
+    """The file is not something this application should install over itself."""
+
+
+def inspect_backup(source: str | Path) -> dict[str, int]:
+    """Check a file is a restorable hydration backup, and say what is in it.
+
+    Separate from `restore` so a caller can find out that a file is unusable
+    *before* doing anything destructive with the database it was going to
+    replace. Raises rather than returning a verdict, because there is nothing
+    sensible to do with a bad one.
+    """
+    path = Path(source)
+    if not path.exists():
+        raise FileNotFoundError(f"no backup at {path}")
+
+    try:
+        incoming = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.Error as exc:
+        raise NotABackup(f"{path} will not open as a database: {exc}") from exc
+
+    try:
+        try:
+            integrity = incoming.execute("PRAGMA integrity_check").fetchone()[0]
+        except sqlite3.DatabaseError as exc:
+            raise NotABackup(f"{path} is not readable as a database: {exc}") from exc
+        if integrity != "ok":
+            raise NotABackup(f"{path} does not pass an integrity check: {integrity}")
+
+        tables = {row[0] for row in incoming.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )}
+        missing = REQUIRED_TABLES - tables
+        if missing:
+            raise NotABackup(
+                f"{path} is not a hydration backup; it has no {', '.join(sorted(missing))} table"
+            )
+
+        return {
+            table: incoming.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in sorted(REQUIRED_TABLES)
+        }
+    finally:
+        incoming.close()
+
+
+def restore(connection: sqlite3.Connection, source: str | Path) -> dict[str, int]:
+    """Replace the contents of the live database with a backup's.
+
+    The copy goes through SQLite's own backup API rather than over the file,
+    for the same reason backups come out through VACUUM INTO: the live database
+    may well be open in another process, and replacing a file underneath an
+    open connection produces something between a stale reader and a corrupt
+    database. This takes the write lock and swaps the pages properly, so the
+    running application picks the new content up.
+
+    The incoming file is checked first -- see `inspect_backup`. A restore that
+    silently installs the wrong file leaves you with no history and no error.
+    """
+    counts = inspect_backup(source)
+    incoming = sqlite3.connect(f"file:{Path(source)}?mode=ro", uri=True)
+    try:
+        incoming.backup(connection)
+    finally:
+        incoming.close()
+    return counts
+
+
+def unused_backup_path(directory: str | Path, stem: str) -> Path:
+    """A path in `directory` that no backup already occupies.
+
+    `backup` refuses to overwrite, which is right -- but two backups inside the
+    same second are a real thing when a command takes one automatically, and
+    that should not be a traceback.
+    """
+    directory = Path(directory)
+    candidate = directory / f"{stem}.db"
+    suffix = 2
+    while candidate.exists():
+        candidate = directory / f"{stem}-{suffix}.db"
+        suffix += 1
+    return candidate

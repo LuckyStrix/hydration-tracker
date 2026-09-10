@@ -7,7 +7,7 @@ the model its inputs. Nothing here writes.
 from __future__ import annotations
 
 import sqlite3
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from . import db, service, units
@@ -29,9 +29,18 @@ def daily_summaries(
     as 03:00 the next day in UTC, and grouping on the stored string would file
     it under tomorrow -- which is the kind of quiet error that makes a chart
     look merely a bit odd rather than obviously broken.
+
+    The query window is widened to the local midnight that opens the first
+    bucket. `start` is an instant, usually "now minus N days", which lands in
+    the middle of a local day -- so without this the earliest bar held only the
+    hours after it and was drawn full height beside complete days. A day that
+    looked like half the drinking of its neighbours, every time, for no reason
+    anyone could see from the chart.
     """
-    lo, hi = db.to_iso(start), db.to_iso(end)
     buckets: dict[date, dict] = {}
+
+    window_start = datetime.combine(start.astimezone(tz).date(), time.min, tzinfo=tz)
+    lo, hi = db.to_iso(window_start), db.to_iso(end)
 
     cursor = start.astimezone(tz).date()
     last = end.astimezone(tz).date()

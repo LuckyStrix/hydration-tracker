@@ -24,3 +24,15 @@ dependencies = { file = ["requirements.txt"] }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 110
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Deliberately narrow. `F` and `B` find mistakes -- a name that is not defined,
+# a mutable default, a `zip` over two things that are not the same length. The
+# formatting and import-ordering rules are left off on purpose: the layout of
+# this codebase is a choice, and a linter that reformats it would bury the
+# findings that matter in a few hundred that do not.
+select = ["E4", "E7", "E9", "F", "B"]

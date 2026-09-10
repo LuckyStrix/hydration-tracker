@@ -18,8 +18,7 @@ fix a rounding error in a water estimate has made your day worse.
 
 from __future__ import annotations
 
-import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from . import constants as k

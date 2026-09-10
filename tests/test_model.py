@@ -657,3 +657,168 @@ def test_a_higher_baseline_scale_costs_more_water(profile, noon):
         ).final.deficit_ml
 
     assert deficit(1.25) > deficit(1.0) > deficit(0.8)
+
+
+# -- the step counter ------------------------------------------------------
+#
+# `simulate` walks steps and looks each step's sweat and burn up by step
+# number. The observer loop used to bind its own loop variable to the same
+# name, so the first void or weighing in a window rewound the counter to a
+# position in the *event list* -- and every step after that read the rate
+# tables at the wrong index. The symptom was the worst kind: no error, a
+# plausible number, and it got worse the more carefully the log was kept.
+
+def test_a_ride_is_charged_at_the_hour_it_happened(profile, noon):
+    """Regardless of what else was logged earlier in the window."""
+    ride = B.ActivityEvent(
+        at=noon + timedelta(hours=6), duration_s=3600, sweat_ml=1500.0, kcal=900.0
+    )
+
+    def first_sweating_sample(events) -> datetime:
+        timeline = B.simulate(
+            profile, events, start=noon, end=noon + timedelta(hours=18),
+            environment=B.Environment.constant(21.0, 45.0),
+        )
+        return next(sample.at for sample in timeline.samples if sample.sweat_ml > 0)
+
+    alone = first_sweating_sample([ride])
+    voids = [B.VoidEvent(at=noon + timedelta(hours=h), colour=4) for h in (1, 2, 3, 4)]
+    assert first_sweating_sample([ride, *voids]) == alone
+
+
+def test_a_well_kept_log_does_not_lose_a_rides_sweat(profile):
+    """The three-day window `current_state` actually runs, with the ride near
+    the end of it. The rewound counter never reached the ride's own steps, so
+    two litres of sweat left the ledger entirely."""
+    end = datetime(2026, 6, 17, 18, 0, tzinfo=UTC)
+    start = end - timedelta(days=3)
+    ride = B.ActivityEvent(
+        at=end - timedelta(hours=4), duration_s=5400, sweat_ml=2000.0, kcal=1300.0
+    )
+
+    diligent = [ride]
+    moment = start
+    while moment < end:
+        diligent.append(B.IntakeEvent(at=moment, volume_ml=250.0))
+        diligent.append(B.VoidEvent(at=moment + timedelta(minutes=30), colour=4))
+        moment += timedelta(hours=2)
+
+    timeline = B.simulate(
+        profile, diligent, start=start, end=end,
+        environment=B.Environment.constant(21.0, 45.0),
+    )
+    assert timeline.final.sweat_ml == pytest.approx(2000.0, rel=0.01)
+
+
+def test_the_burn_lands_on_the_same_steps_as_the_sweat(profile, noon):
+    """Both rate tables are keyed by step number, so both moved together."""
+    ride = B.ActivityEvent(
+        at=noon + timedelta(hours=6), duration_s=3600, sweat_ml=1500.0, kcal=900.0
+    )
+    timeline = B.simulate(
+        profile, [ride, B.VoidEvent(at=noon + timedelta(hours=1), colour=4)],
+        start=noon, end=noon + timedelta(hours=18),
+        environment=B.Environment.constant(21.0, 45.0),
+    )
+    sweating = [s.at for s in timeline.samples if s.sweat_ml > 0]
+    burning = [s.at for s in timeline.samples if s.activity_kcal > 0]
+    assert sweating[0] == burning[0]
+    assert timeline.final.activity_kcal == pytest.approx(900.0, rel=0.01)
+
+
+# -- caffeine --------------------------------------------------------------
+#
+# The whole chain existed and reached the ledger: a caffeine figure on every
+# beverage, a per-drink override, a profile column, a threshold constant, a
+# field on the event and a slot on the state. Nothing read any of it, so a
+# person who set the sensitivity got the same answer as a person who did not.
+
+def test_caffeine_does_nothing_by_default(profile, noon):
+    """Which is the honest default -- habitual drinkers show no net diuresis.
+    It has to stay true after wiring the term up."""
+    coffee = [B.IntakeEvent(at=noon, volume_ml=500.0, caffeine_mg=400.0)]
+    water = [B.IntakeEvent(at=noon, volume_ml=500.0)]
+
+    def urine(events):
+        return B.simulate(
+            profile, events, start=noon, end=noon + timedelta(hours=8)
+        ).final.urine_ml
+
+    assert urine(coffee) == pytest.approx(urine(water))
+
+
+def _sensitive(profile: B.Profile, ml_per_mg: float = 1.0) -> B.Profile:
+    return B.Profile(**{**profile.__dict__, "caffeine_diuresis_ml_per_mg": ml_per_mg})
+
+
+def test_someone_caffeine_affects_passes_more_after_a_heavy_morning(profile, noon):
+    sensitive = _sensitive(profile)
+    heavy = [B.IntakeEvent(at=noon + timedelta(minutes=30 * n), volume_ml=250.0, caffeine_mg=200.0)
+             for n in range(4)]
+    plain = [B.IntakeEvent(at=noon + timedelta(minutes=30 * n), volume_ml=250.0) for n in range(4)]
+
+    def urine(p, events):
+        return B.simulate(p, events, start=noon, end=noon + timedelta(hours=10)).final.urine_ml
+
+    assert urine(sensitive, heavy) > urine(sensitive, plain)
+
+
+def test_a_single_coffee_stays_under_the_threshold(profile, noon):
+    """It is a threshold effect, not a linear one. The third coffee is the one
+    that does something, not the first."""
+    sensitive = _sensitive(profile)
+
+    def urine(events):
+        return B.simulate(
+            sensitive, events, start=noon, end=noon + timedelta(hours=10)
+        ).final.urine_ml
+
+    one = [B.IntakeEvent(at=noon, volume_ml=250.0, caffeine_mg=100.0)]
+    plain = [B.IntakeEvent(at=noon, volume_ml=250.0)]
+    assert urine(one) == pytest.approx(urine(plain))
+
+
+def test_the_caffeine_load_falls_away_between_doses(profile, noon):
+    """Two coffees a day apart must not add up the way two an hour apart do --
+    the load is a running quantity with caffeine's own half-life, not a total."""
+    sensitive = _sensitive(profile)
+
+    def urine(gap_h):
+        events = [
+            B.IntakeEvent(at=noon, volume_ml=250.0, caffeine_mg=250.0),
+            B.IntakeEvent(at=noon + timedelta(hours=gap_h), volume_ml=250.0, caffeine_mg=250.0),
+        ]
+        return B.simulate(
+            sensitive, events, start=noon, end=noon + timedelta(hours=48)
+        ).final.urine_ml
+
+    assert urine(1) > urine(24)
+
+
+# -- the observers report what they actually used --------------------------
+
+def test_a_weight_correction_quotes_the_trend_it_compared_against(profile, noon):
+    """Not the trend after this morning's reading was folded in. Explaining a
+    shift with a figure that had no part in producing it is worse than not
+    explaining it."""
+    events = [
+        B.WeightEvent(at=noon - timedelta(days=2), mass_kg=75.0, context="morning"),
+        B.WeightEvent(at=noon, mass_kg=73.5, context="morning"),
+    ]
+    timeline = B.simulate(profile, events, start=noon - timedelta(days=3), end=noon + timedelta(hours=1))
+    correction = next(c for c in timeline.corrections if c.kind == "weight")
+    assert "75.0 kg trend" in correction.reasons[0]
+
+
+def test_the_profiles_urine_trust_reaches_the_ledger(profile, noon):
+    """`urine.blend` is what the ledger runs, so the setting and the tested
+    function cannot disagree."""
+    def shift(trust: float) -> float:
+        p = B.Profile(**{**profile.__dict__, "trust_urine": trust})
+        timeline = B.simulate(
+            p, [B.VoidEvent(at=noon + timedelta(hours=1), colour=7)],
+            start=noon, end=noon + timedelta(hours=2),
+        )
+        return abs(next(c for c in timeline.corrections if c.kind == "urine").shift_ml)
+
+    assert shift(0.9) > shift(0.6) > shift(0.1)

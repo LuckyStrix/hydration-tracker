@@ -121,15 +121,34 @@ directory. That is deliberate, and both reasons bite in practice:
   editor's indexer — will eventually copy the database mid-write and end up with
   a file that may not open.
 
-So back it up with the command rather than by copying the file:
+So back it up with the command rather than by copying the file. That uses
+`VACUUM INTO`, which takes a read lock and writes a complete, defragmented
+database — consistent by construction, and safe for anything to pick up.
+
+**This happens on its own.** The app takes one every 24 hours into `./backups/`
+and keeps the newest 14, because a backup you have to remember to take is a
+backup you will not have. The Settings page shows when the last one ran. To
+take one now, or to change the schedule:
 
 ```powershell
-docker compose exec hydration hydration backup
+docker compose exec hydration hydration backup            # now
+docker compose exec hydration hydration backup --keep 14  # and prune old ones
 ```
 
-That uses `VACUUM INTO`, which takes a read lock and writes a complete,
-defragmented database. The result lands in `./backups/` and is consistent by
-construction — safe for anything to pick up.
+`HYDRATION_BACKUP_HOURS`, `HYDRATION_BACKUP_KEEP` and `HYDRATION_BACKUP_AUTOMATIC`
+in `.env` control the schedule.
+
+### Putting one back
+
+```powershell
+docker compose exec hydration hydration restore /backups/hydration-20260615T120000Z.db
+```
+
+It asks for confirmation, takes a copy of the current database first, and
+refuses a file that is not a hydration backup or does not pass an integrity
+check — restoring the wrong file should cost a minute, not a history. The copy
+goes through SQLite's own backup API rather than over the file, so it works
+while the app is running. Restart the container afterwards anyway.
 
 If you do point `/data` at a host directory, keep it on a local disk. SQLite
 locking does not work reliably over a network share or a mapped drive.
@@ -167,6 +186,8 @@ hydration status          # print the current plan
 hydration garmin-login    # first Garmin login, answering MFA
 hydration sync            # pull from Garmin now
 hydration backup          # consistent database copy into ./backups
+hydration backup --keep N # ...and delete all but the newest N
+hydration restore FILE    # put a backup back (asks first; --force to skip)
 hydration set-password    # reset the web password
 ```
 
@@ -174,8 +195,14 @@ hydration set-password    # reset the web password
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-PYTHONPATH=src .venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pytest -q      # pyproject sets pythonpath = ["src"]
+.venv/bin/python -m ruff check src tests
 ```
+
+The lint rule set is deliberately narrow — pyflakes and bugbear, which find
+mistakes, not the formatting rules, which would churn a layout that is a
+choice. CI runs both on 3.11 and 3.12, builds the image, and checks that a
+backup taken inside it can be restored.
 
 The model is a pure function — dataclasses in, a timeline out, no database — so
 almost all of it is testable without a browser. That is deliberate: the model is

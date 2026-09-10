@@ -204,6 +204,7 @@ class Sample:
     insensible_ml: float = 0.0
     sweat_sodium_mg: float = 0.0
     supplemental_sodium_mg: float = 0.0
+    caffeine_mg: float = 0.0
     activity_kcal: float = 0.0
 
 
@@ -419,7 +420,7 @@ def simulate(
             elif isinstance(event, ActivityEvent):
                 state.last_evidence_at = _event_time(event) + timedelta(seconds=event.duration_s)
             if isinstance(event, IntakeEvent):
-                _apply_intake(state, cumulative, event)
+                _apply_intake(profile, state, cumulative, event)
             elif isinstance(event, MealEvent):
                 state.gut_ml += event.water_ml
                 cumulative.intake_ml += event.water_ml
@@ -441,8 +442,15 @@ def simulate(
 
         # 3. Observers.
         if apply_observers:
-            for event, index in pending_observers:
-                correction = _apply_observer(profile, state, event, void_contexts.get(index))
+            # `event_index`, not `index`. These are positions in the event
+            # list, and binding them to the loop's step counter silently
+            # rewound it -- after which `sweat_rate` and `kcal_rate`, which are
+            # keyed by step, were read at the wrong steps for the rest of the
+            # run. A ride's sweat then landed hours late, or past `end` and so
+            # not at all, and it got worse the more diligently the log was
+            # kept. Covered by test_a_well_kept_log_does_not_lose_a_rides_sweat.
+            for event, event_index in pending_observers:
+                correction = _apply_observer(profile, state, event, void_contexts.get(event_index))
                 if correction is not None:
                     corrections.append(correction)
                     state.last_observation_at = _event_time(event)
@@ -484,6 +492,7 @@ class _State:
     weight_trend_kg: float | None
     alcohol_pending_ml: float = 0.0
     caffeine_pending_ml: float = 0.0
+    caffeine_load_mg: float = 0.0
     last_engagement_at: datetime | None = None
     last_evidence_at: datetime | None = None
     last_observation_at: datetime | None = None
@@ -517,7 +526,7 @@ def _event_time(event: Event) -> datetime:
     return event.at
 
 
-def _apply_intake(state: _State, cumulative: Sample, event: IntakeEvent) -> None:
+def _apply_intake(profile: Profile, state: _State, cumulative: Sample, event: IntakeEvent) -> None:
     """A drink lands in the stomach, not in the bloodstream.
 
     The hydration index is applied here rather than at absorption. Strictly it
@@ -532,6 +541,26 @@ def _apply_intake(state: _State, cumulative: Sample, event: IntakeEvent) -> None
     cumulative.intake_ml += event.volume_ml
     cumulative.supplemental_sodium_mg += event.sodium_mg
     state.alcohol_pending_ml += event.alcohol_g * k.ALCOHOL_DIURESIS_ML_PER_G
+
+    # Caffeine, if this person is someone it actually affects.
+    #
+    # The load is tracked whatever the coefficient, so the threshold means the
+    # same thing for everyone; only the conversion into urine is gated. Only
+    # the part of a dose that carries the running load *past* the threshold
+    # counts, which is what makes this a threshold effect rather than a linear
+    # one -- the third coffee is the one that does something, not the first.
+    #
+    # Zero is the default and the honest one: habitual users show no meaningful
+    # net diuresis. But the profile column, the beverage catalogue's caffeine
+    # figures and the per-drink override all existed already and reached
+    # exactly here, where nothing read them -- so a person who set it got the
+    # same answer as a person who did not.
+    if event.caffeine_mg:
+        cumulative.caffeine_mg += event.caffeine_mg
+        was_over = max(0.0, state.caffeine_load_mg - k.CAFFEINE_DIURESIS_THRESHOLD_MG)
+        state.caffeine_load_mg += event.caffeine_mg
+        now_over = max(0.0, state.caffeine_load_mg - k.CAFFEINE_DIURESIS_THRESHOLD_MG)
+        state.caffeine_pending_ml += (now_over - was_over) * profile.caffeine_diuresis_ml_per_mg
 
 
 def _step_physics(
@@ -595,6 +624,13 @@ def _step_physics(
     if state.alcohol_pending_ml > 0:
         released = state.alcohol_pending_ml * (1.0 - math.exp(-step_h * 60.0 / k.ALCOHOL_DIURESIS_TAU_MIN))
         state.alcohol_pending_ml -= released
+        urine += released
+
+    if state.caffeine_load_mg > 0:
+        state.caffeine_load_mg *= 0.5 ** (step_h * 60.0 / k.CAFFEINE_HALFLIFE_MIN)
+    if state.caffeine_pending_ml > 0:
+        released = state.caffeine_pending_ml * (1.0 - math.exp(-step_h * 60.0 / k.CAFFEINE_DIURESIS_TAU_MIN))
+        state.caffeine_pending_ml -= released
         urine += released
 
     state.deficit_ml += urine
@@ -693,12 +729,15 @@ def _apply_observer(
         if context is None:
             return None
         reading = urine_model.read(context)
-        # The profile can dial overall trust in colour readings up or down
-        # without touching each timing rule.
-        weight = reading.confidence * profile.trust_urine
+        # Through `urine.blend`, not open-coded here. The profile can dial
+        # overall trust in colour readings up or down without touching each
+        # timing rule, and doing the arithmetic in two places meant the tests
+        # were pinning a copy the ledger did not run.
         observed = reading.deficit_ml(profile.body_mass_kg)
         before = state.deficit_ml
-        state.deficit_ml = (1.0 - weight) * before + weight * observed
+        state.deficit_ml = urine_model.blend(
+            before, reading, profile.body_mass_kg, profile.trust_urine
+        )
         return Correction(
             at=event.at,
             kind="urine",
@@ -735,7 +774,12 @@ def _apply_observer(
         if state.weight_trend_kg is None:
             state.weight_trend_kg = event.mass_kg
             return None
-        observed = urine_model.deficit_from_weight_ml(event.mass_kg, state.weight_trend_kg)
+        # Held before the trend absorbs this morning's reading, because it is
+        # the trend the deviation was measured against -- and it is the number
+        # the correction reports as its reason. Quoting the updated trend
+        # explained the shift with a figure that had no part in producing it.
+        compared_against_kg = state.weight_trend_kg
+        observed = urine_model.deficit_from_weight_ml(event.mass_kg, compared_against_kg)
         alpha = 1.0 - 0.5 ** (1.0 / k.WEIGHT_TREND_HALFLIFE_DAYS)
         state.weight_trend_kg = alpha * event.mass_kg + (1.0 - alpha) * state.weight_trend_kg
         if observed is None:
@@ -749,7 +793,7 @@ def _apply_observer(
             observed_ml=observed,
             blended_ml=state.deficit_ml,
             confidence=k.TRUST_WEIGHT,
-            reasons=[f"morning weight {event.mass_kg:.1f} kg against a {state.weight_trend_kg:.1f} kg trend"],
+            reasons=[f"morning weight {event.mass_kg:.1f} kg against a {compared_against_kg:.1f} kg trend"],
         )
 
     return None

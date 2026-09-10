@@ -19,7 +19,7 @@ what makes the history page able to explain itself.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from . import constants as k
 
@@ -57,10 +57,6 @@ class UrineReading:
         """
         return self.deficit_pct / 100.0 * body_mass_kg * 1000.0
 
-    @property
-    def weight(self) -> float:
-        """How far this reading is allowed to pull the ledger, all in."""
-        return self.confidence * k.TRUST_URINE
 
 
 SIGNIFICANT_INTAKE_ML = 300.0
@@ -140,7 +136,24 @@ def read(ctx: VoidContext) -> UrineReading:
     return UrineReading(deficit_pct=deficit_pct, confidence=confidence, reasons=reasons)
 
 
-def blend(ledger_ml: float, reading: UrineReading, body_mass_kg: float) -> float:
+def weight_for(reading: UrineReading, trust_urine: float = k.TRUST_URINE) -> float:
+    """How far this reading is allowed to pull the ledger, all in.
+
+    `trust_urine` is a parameter rather than the constant because the profile
+    can dial overall trust in colour readings up or down. Reading the constant
+    here meant this function -- and `blend` below -- quietly ignored that
+    setting, while the ledger applied it; the two agreed only at the default,
+    and the tests were pinning the path the application did not take.
+    """
+    return reading.confidence * trust_urine
+
+
+def blend(
+    ledger_ml: float,
+    reading: UrineReading,
+    body_mass_kg: float,
+    trust_urine: float = k.TRUST_URINE,
+) -> float:
     """Pull the ledger towards what the urine says, in proportion to trust.
 
     This is the whole reason the app is more than a drink counter. The ledger
@@ -148,7 +161,7 @@ def blend(ledger_ml: float, reading: UrineReading, body_mass_kg: float) -> float
     to one person. The urine is a noisy look at the truth. Neither alone is
     good enough; a weighted blend of both is considerably better than either.
     """
-    w = reading.weight
+    w = weight_for(reading, trust_urine)
     return (1.0 - w) * ledger_ml + w * reading.deficit_ml(body_mass_kg)
 
 

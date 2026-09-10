@@ -28,6 +28,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
 
+      - name: Lint
+        # Narrow rule set, configured in pyproject.toml -- mistakes, not style.
+        run: python -m ruff check src tests
+
       - name: Run the suite
         # pyproject sets pythonpath = ["src"], so this needs no PYTHONPATH.
         run: python -m pytest -q
@@ -64,6 +68,14 @@ jobs:
 
       - name: The CLI works inside the image
         run: docker exec hydration-ci hydration --help
+
+      - name: A backup can be taken and put back
+        # The restore path is the half that matters, and the half nobody
+        # exercises until the day they need it.
+        run: |
+          docker exec hydration-ci hydration backup --into /tmp/b
+          file=$(docker exec hydration-ci sh -c 'ls /tmp/b/hydration-*.db | head -1')
+          docker exec hydration-ci hydration restore --force "$file"
 
       - name: Logs
         if: always()

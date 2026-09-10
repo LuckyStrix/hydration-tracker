@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import sqlite3
 
-import pytest
 
 from hydration import db, service
 
@@ -78,6 +77,96 @@ def test_running_init_repeatedly_changes_nothing():
 def test_every_migration_carries_a_default():
     """They are applied to tables that already have rows, so a NOT NULL column
     without a default cannot be added at all."""
-    for table, column, definition in db.MIGRATIONS:
+    for table, column, definition, _backfill in db.MIGRATIONS:
         if "NOT NULL" in definition.upper():
             assert "DEFAULT" in definition.upper(), f"{table}.{column} would fail on a populated table"
+
+
+def _activity_table_without_ended_at(connection: sqlite3.Connection) -> None:
+    """`activity` as it looked before `ended_at` existed, with a ride in it."""
+    connection.execute("DROP TABLE IF EXISTS activity")
+    connection.execute(
+        """
+        CREATE TABLE activity (
+            id INTEGER PRIMARY KEY,
+            provider TEXT NOT NULL DEFAULT 'manual',
+            external_id TEXT,
+            started_at TEXT NOT NULL,
+            duration_s REAL NOT NULL,
+            name TEXT,
+            activity_type TEXT,
+            distance_m REAL,
+            kcal REAL,
+            avg_hr REAL,
+            sweat_ml_reported REAL,
+            sweat_ml_estimated REAL,
+            sweat_ml_measured REAL,
+            sweat_ml_used REAL NOT NULL DEFAULT 0,
+            sweat_source TEXT NOT NULL DEFAULT 'none',
+            fluid_consumed_ml REAL NOT NULL DEFAULT 0,
+            temp_c REAL,
+            humidity_pct REAL,
+            raw_json TEXT,
+            created_at TEXT NOT NULL,
+            voided_at TEXT,
+            voided_reason TEXT
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO activity (started_at, duration_s, kcal, sweat_ml_used, created_at)
+        VALUES ('2026-08-01T10:00:00+00:00', 5400, 900, 1800, '2026-08-01T12:00:00+00:00')
+        """
+    )
+
+
+def test_an_activity_that_predates_ended_at_still_reaches_the_ledger():
+    """The column arrives defaulted to the empty string, which sorts below
+    every real timestamp -- so without a backfill the overlap query in
+    `build_events` matches nothing and the ride silently leaves the ledger."""
+    connection = db.connect(":memory:")
+    db.init(connection)
+    _activity_table_without_ended_at(connection)
+
+    db.init(connection)
+
+    row = connection.execute("SELECT started_at, ended_at FROM activity").fetchone()
+    assert row["ended_at"] == "2026-08-01T11:30:00+00:00", "start plus duration, in the stored format"
+
+    found = connection.execute(
+        "SELECT count(*) FROM activity WHERE ended_at >= ? AND started_at <= ?",
+        ("2026-07-01T00:00:00+00:00", "2026-09-01T00:00:00+00:00"),
+    ).fetchone()[0]
+    assert found == 1, "the ledger's own overlap query finds it"
+    connection.close()
+
+
+def test_a_database_that_took_the_backfill_less_migration_is_repaired():
+    """The first version of this migration shipped without a backfill, so a
+    database can already be sitting there holding empty strings. The column
+    exists, so adding it is skipped -- the repair has to happen anyway."""
+    connection = db.connect(":memory:")
+    db.init(connection)
+    _activity_table_without_ended_at(connection)
+    connection.execute("ALTER TABLE activity ADD COLUMN ended_at TEXT NOT NULL DEFAULT ''")
+    assert connection.execute("SELECT ended_at FROM activity").fetchone()["ended_at"] == ""
+
+    db.init(connection)
+
+    assert connection.execute("SELECT ended_at FROM activity").fetchone()["ended_at"] != ""
+    connection.close()
+
+
+def test_the_backfill_leaves_a_real_ended_at_alone():
+    connection = db.connect(":memory:")
+    db.init(connection)
+    service.record_activity(
+        connection, started_at=db.from_iso("2026-08-01T10:00:00+00:00"), duration_s=3600
+    )
+    before = connection.execute("SELECT ended_at FROM activity").fetchone()["ended_at"]
+
+    db.init(connection)
+
+    assert connection.execute("SELECT ended_at FROM activity").fetchone()["ended_at"] == before
+    connection.close()

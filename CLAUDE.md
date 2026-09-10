@@ -110,6 +110,66 @@ quietly wrong, which is worse. So:
   EXISTS` does nothing to an existing table, so a new column never reaches a
   database that already has data. Append, never reorder, and always give a
   DEFAULT.
+- **A migration whose DEFAULT is a placeholder needs the backfill too** -- the
+  fourth element of the tuple. `ended_at` arrived defaulted to `''`, which sorts
+  below every real timestamp, so every activity older than the upgrade dropped
+  out of the ledger without a word. Backfills run on every `init()`, not only on
+  the start that adds the column, so a database that took an earlier
+  backfill-less version is repaired rather than left broken.
+- **The observer loop in `simulate` binds `event_index`, never `index`.**
+  `index` is the step counter, and `sweat_rate`/`kcal_rate` are keyed by it.
+  Rebinding it rewound the counter to a position in the *event list*, after
+  which every step read the rate tables at the wrong index -- a ride's sweat
+  landed hours late, or past `end` and so not at all, and it got worse the more
+  diligently the log was kept. Covered by
+  `test_a_well_kept_log_does_not_lose_a_rides_sweat`.
+- **An activity's conditions are filled in field by field.** Garmin reports a
+  ride temperature and never a humidity; replacing the pair because one was
+  missing threw away the only reading taken where the sweating happened and
+  substituted the sensor at home. Temperature is what the heat-fraction anchors
+  move most on.
+- **A hand-logged activity has no external id**, so the unique index cannot
+  catch a double submit -- and two copies of a ride is two copies of its sweat.
+  `record_activity` guards it on (provider, started_at) instead.
+- **The sweat calibration re-fits from the service layer, not only from the
+  sync.** A pre/post pair almost always lands after the session is already in
+  the table, and it only ever re-fitted at the end of a Garmin run -- so anyone
+  logging by hand stayed on the population model however many sessions they
+  weighed. `log_weight` refreshes the activity; `log_manual_activity` re-fits.
+- **The sync cursor only moves when everything landed.** Moving it regardless
+  gave a failed activity one more chance inside the two-day overlap and then
+  stepped over it for good.
+- **`/import` has its own body limit.** A year of drinking exports to about a
+  megabyte, and holding it to the ordinary form ceiling meant the export could
+  not be read back -- the restore path failing on the size of the thing being
+  restored. `app._body_limit` is the one place that decides.
+- **Backups are taken by the app, on a timer** (`maintenance.py`), because a
+  backup you have to remember is a backup you will not have. `hydration restore`
+  is the other half, and it goes through SQLite's backup API rather than over the
+  file: the live database may well be open in another process.
+- **`record_recommendation` compares substance, never the headline.** The
+  headline carries a clock time -- "...every 20 min until 5:40 PM" -- which
+  advances with the wall clock, so every headline differs from the one a minute
+  before it. Home Assistant polls `/api/v1/status` every 60 s, and comparing the
+  strings wrote 1440 rows a day: exactly the duplicate-burial the check exists
+  to prevent, arriving through the door it was watching.
+- **`daily_summaries` widens its query to the local midnight that opens the
+  first bucket.** `start` is an instant, so without it the earliest bar held
+  only the hours after "now minus N days" and was drawn full height beside
+  complete days. The route asks for `days - 1` so the chart has `days` bars.
+- **The ledger blends urine through `urine.blend`**, and passes
+  `profile.trust_urine` in. The arithmetic was open-coded in `_apply_observer`
+  as well, and the copy in `urine.py` read the *constant* -- so the two agreed
+  only at the default, and the tests were pinning the path the app did not take.
+- **Caffeine is a real term now, defaulting to nothing.** The chain -- catalogue
+  figures, per-drink override, profile column, threshold constant, event field,
+  state slot -- all existed and reached `_apply_intake`, where nothing read it.
+  It is a threshold effect on a *running load* with caffeine's own half-life, so
+  the third coffee does something and the first does not. `caffeine_diuresis_ml_mg`
+  at 0.0 leaves the ledger bit-for-bit as it was.
+- **A correction reports the number it actually used.** The weight observer
+  quoted the trend *after* this morning's reading had been folded into it --
+  explaining a shift with a figure that had no part in producing it.
 
 ## Things that will bite you
 
@@ -127,3 +187,7 @@ quietly wrong, which is worse. So:
 - **The Home Assistant entity state cap is 255 characters.** The headline is
   truncated to fit, because HASS rejects an over-long state with an error that
   gives no hint why.
+- **Lint is `ruff check src tests`**, and the rule set is deliberately narrow
+  (`E4`, `E7`, `E9`, `F`, `B`). The formatting and import-ordering rules are off
+  on purpose: the layout here is a choice, and turning them on would bury the
+  findings that matter under a few hundred that do not.

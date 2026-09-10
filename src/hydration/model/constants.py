@@ -78,7 +78,20 @@ CAFFEINE_DIURESIS_THRESHOLD_MG = 300.0
 """Zero on purpose. Habitual caffeine users show no meaningful net diuresis,
 and coffee's hydration index is close to water's. The threshold and a non-zero
 coefficient are here so someone who genuinely reacts can set one, but the
-default must not encode folklore."""
+default must not encode folklore.
+
+The threshold is a *running load*, not a per-drink dose: the effect is about
+how much caffeine is on board, so two coffees an hour apart cross it where
+either alone would not."""
+
+CAFFEINE_HALFLIFE_MIN = 300.0
+"""Caffeine's elimination half-life, about five hours. What makes the load
+above a running quantity rather than a daily total -- a morning coffee is
+mostly gone by evening and should stop counting toward the afternoon's."""
+
+CAFFEINE_DIURESIS_TAU_MIN = 90.0
+"""How fast the extra urine actually arrives once the load is over the
+threshold. Slower than alcohol's, which is a sharper effect."""
 
 
 # -- intake and absorption -------------------------------------------------

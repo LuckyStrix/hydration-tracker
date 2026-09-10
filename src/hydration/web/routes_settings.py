@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import math
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -50,9 +50,27 @@ def login_page(request: Request, next: str = "/"):
 @router.post("/login")
 def login(request: Request, password: str = Form(...), next: str = Form("/")):
     conn = deps.connection()
+    target = deps.safe_path(next)
+
+    # Checked before the password, not after: an attempt that is refused for
+    # being too soon must not also tell you whether the guess was right.
+    waiting = security.login_lock_remaining_s(conn)
+    if waiting > 0:
+        return deps.redirect(
+            f"/login?next={target}",
+            f"Too many attempts. Try again in {math.ceil(waiting)} seconds.",
+            "error",
+        )
+
     if not security.check_password(conn, password):
-        return deps.redirect(f"/login?next={deps.safe_path(next)}", "That is not the password.", "error")
-    return _sign_in(conn, request, deps.safe_path(next))
+        locked_for = security.record_failed_login(conn)
+        message = "That is not the password."
+        if locked_for:
+            message += f" Locked for {math.ceil(locked_for)} seconds."
+        return deps.redirect(f"/login?next={target}", message, "error")
+
+    security.clear_login_failures(conn)
+    return _sign_in(conn, request, target)
 
 
 def _sign_in(conn, request: Request, target: str) -> RedirectResponse:
@@ -86,6 +104,7 @@ def logout(request: Request):
 def settings_page(request: Request):
     conn = deps.connection()
     row = service.profile_row(conn)
+    from ..maintenance import backup_status
     from ..sync import sync_status
 
     return deps.render(
@@ -95,8 +114,10 @@ def settings_page(request: Request):
         mass_lb=units.kg_to_lb(row["body_mass_kg"]),
         beverages=service.list_beverages(conn, include_archived=True),
         tokens=security.list_tokens(conn),
+        caffeine_options=_caffeine_options(row["caffeine_diuresis_ml_mg"]),
         new_token=request.query_params.get("token"),
         sync=sync_status(conn),
+        backups=backup_status(conn),
         garmin_configured=bool(config.GARMIN_EMAIL and config.GARMIN_PASSWORD),
         saltiness=_saltiness_options(row["sweat_sodium_mmol_l"]),
     )
@@ -111,6 +132,27 @@ SALTINESS = (
 """The profile asks in plain observable terms rather than millimoles per litre,
 because a number nobody can estimate produces a default nobody changes -- and
 this is the single most useful thing to get right for electrolyte advice."""
+
+
+CAFFEINE_SENSITIVITY = (
+    (0.0, "No noticeable effect", "The usual case, and the default. Habitual drinkers show no "
+                                 "meaningful net loss, and coffee hydrates about as well as water."),
+    (0.5, "Noticeable", "A third coffee sends you to the bathroom sooner and more than the "
+                        "volume you drank explains."),
+    (1.0, "Strong", "Caffeine is clearly a diuretic for you, and a heavy morning leaves you dry "
+                    "by lunchtime."),
+)
+"""Asked in observable terms, like the sweat saltiness above. 'Millilitres of
+urine per milligram of caffeine' is a number nobody can estimate about
+themselves, and a number nobody can estimate is a default nobody changes."""
+
+
+def _caffeine_options(current: float) -> list[dict]:
+    closest = min(CAFFEINE_SENSITIVITY, key=lambda entry: abs(entry[0] - current))[0]
+    return [
+        {"value": value, "label": label, "hint": hint, "selected": value == closest}
+        for value, label, hint in CAFFEINE_SENSITIVITY
+    ]
 
 
 def _saltiness_options(current: float) -> list[dict]:
@@ -135,6 +177,8 @@ def save_profile(
     sweat_sodium_mmol_l: float = Form(40.0),
     absorption_cap_ml_h: float = Form(800.0),
     trust_urine: float = Form(0.6),
+    food_water_ml_day: float = Form(700.0),
+    caffeine_diuresis_ml_mg: float = Form(0.0),
     default_temp_f: str = Form("70"),
     default_humidity_pct: float = Form(45.0),
 ):
@@ -154,6 +198,8 @@ def save_profile(
         sweat_sodium_mmol_l=sweat_sodium_mmol_l,
         absorption_cap_ml_h=absorption_cap_ml_h,
         trust_urine=trust_urine,
+        food_water_ml_day=food_water_ml_day,
+        caffeine_diuresis_ml_mg=caffeine_diuresis_ml_mg,
         default_temp_c=units.f_to_c(units.parse_optional_float(default_temp_f) or 70.0),
         default_humidity_pct=default_humidity_pct,
     )
@@ -249,3 +295,24 @@ def sync_now(request: Request):
     result = run_sync_once(deps.connection())
     kind = "good" if result.get("ok") else "error"
     return deps.redirect("/settings", result.get("message", "Sync finished."), kind)
+
+
+@router.post("/settings/backup")
+def backup_now(request: Request):
+    """Take one on demand, alongside the scheduled ones.
+
+    Restoring is deliberately not offered here. It replaces the whole database,
+    which is not a thing to put one click away from a page you visit to change
+    your bedtime -- `hydration restore` asks for confirmation and takes a copy
+    of what it is about to overwrite.
+    """
+    from ..maintenance import run_backup_once
+
+    result = run_backup_once(deps.connection())
+    if not result.get("ok"):
+        return deps.redirect("/settings", f"Backup failed: {result.get('message')}", "error")
+    pruned = result.get("pruned") or 0
+    message = f"Backed up to {result['path']}."
+    if pruned:
+        message += f" Pruned {pruned} older."
+    return deps.redirect("/settings", message, "good")

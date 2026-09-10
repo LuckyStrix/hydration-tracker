@@ -14,7 +14,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import config, db, security
@@ -56,13 +56,16 @@ async def lifespan(app: FastAPI):
     security.purge_expired_sessions(connection)
     log.info("hydration tracker ready, database at %s", config.DB_PATH)
 
+    from ..maintenance import start_maintenance, stop_maintenance
     from ..sync import start_sync, stop_sync
 
     start_sync()
+    start_maintenance()
     try:
         yield
     finally:
         stop_sync()
+        stop_maintenance()
         db.close()
 
 
@@ -83,11 +86,17 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
         path = request.url.path
+        limit = _body_limit(path)
 
         if request.method not in SAFE_METHODS:
             declared = request.headers.get("content-length")
-            if declared and int(declared) > config.MAX_BODY_BYTES:
-                return _finish(PlainTextResponse("Request too large", status_code=413))
+            if declared:
+                try:
+                    too_big = int(declared) > limit
+                except ValueError:
+                    too_big = True  # a header we cannot read is not one we trust
+                if too_big:
+                    return _finish(_too_large(limit))
 
         is_api = path.startswith(deps.API_PREFIX)
 
@@ -102,11 +111,21 @@ def create_app() -> FastAPI:
                 nxt = deps.safe_path(str(request.url.path))
                 return _finish(RedirectResponse(f"{target}?next={nxt}", status_code=303))
 
-        # CSRF for browser writes. Read the body with `body()`, never `form()`:
-        # Starlette only replays a body it saw read through `body()`, and
-        # `form()` here leaves every downstream route seeing an empty form.
+        # The header check above is a courtesy to a well-behaved client. A
+        # chunked request carries no Content-Length at all, so the only figure
+        # worth enforcing is the one that actually arrived -- and after the
+        # auth gate, so an anonymous caller cannot make us hold a body at all.
+        #
+        # Read it with `body()`, never `form()`: Starlette only replays a body
+        # it saw read through `body()`, and `form()` here leaves every
+        # downstream route seeing an empty form.
+        if request.method not in SAFE_METHODS:
+            body = await request.body()
+            if len(body) > limit:
+                return _finish(_too_large(limit, is_api=is_api))
+
+        # CSRF for browser writes.
         if request.method not in SAFE_METHODS and not is_api:
-            await request.body()
             form = await request.form()
             session_id = request.cookies.get(config.SESSION_COOKIE)
             supplied = form.get("csrf_token")
@@ -117,6 +136,25 @@ def create_app() -> FastAPI:
         return _finish(response)
 
     return app
+
+
+def _body_limit(path: str) -> int:
+    """How large a body this path may carry.
+
+    `/import` is the one route whose body is legitimately a whole health log,
+    and it has its own ceiling. Everything else is a form.
+    """
+    return config.IMPORT_MAX_BODY_BYTES if path == "/import" else config.MAX_BODY_BYTES
+
+
+def _too_large(limit: int, *, is_api: bool = False):
+    """Say what the limit was. A bare "too large" sends you looking in the
+    wrong place -- which is exactly what it did when an export outgrew the
+    import."""
+    message = f"Request too large; the limit for this path is {limit // 1024} kB"
+    if is_api:
+        return JSONResponse({"ok": False, "error": message}, status_code=413)
+    return PlainTextResponse(message, status_code=413)
 
 
 def _finish(response):

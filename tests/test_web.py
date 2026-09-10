@@ -376,7 +376,6 @@ def test_exports_are_not_public(client):
 
 
 def test_a_file_can_be_imported_back(signed_in, client, token):
-    import json
 
     client.post("/api/v1/intake", json={"beverage": "Coffee", "volume_l": 0.3}, headers=_auth(token))
     exported = signed_in.get("/export/hydration.json").text
@@ -402,3 +401,139 @@ def test_importing_a_junk_file_is_refused_without_a_traceback(signed_in):
     )
     assert response.status_code in (303, 400)
     assert response.status_code != 500
+
+
+# -- body limits -----------------------------------------------------------
+
+def _flash(response) -> str:
+    from urllib.parse import unquote
+    return unquote(response.cookies.get("hydration_flash", ""))
+
+
+def test_an_export_larger_than_a_form_can_still_be_imported(signed_in, client, token, monkeypatch):
+    """The two limits are separate for a reason. Holding the import to the
+    ordinary form ceiling meant a year of history exported to about a megabyte
+    and then could not be read back -- the restore path failing on the size of
+    the thing being restored."""
+    monkeypatch.setattr(config, "MAX_BODY_BYTES", 2048)
+
+    # Distinct volumes: the importer merges rows that look identical, which is
+    # correct and would otherwise collapse the whole fixture into one.
+    for n in range(20):
+        client.post(
+            "/api/v1/intake", json={"beverage": "Water", "volume_l": 0.2 + n / 100}, headers=_auth(token)
+        )
+    exported = signed_in.get("/export/hydration.json").text
+    assert len(exported) > config.MAX_BODY_BYTES, "the fixture has to actually be too big for a form"
+
+    conn = deps.connection()
+    conn.execute("DELETE FROM intake")
+
+    response = signed_in.post(
+        "/import",
+        data={"csrf_token": _csrf(signed_in)},
+        files={"file": ("hydration.json", exported, "application/json")},
+    )
+    assert response.status_code == 303
+    assert conn.execute("SELECT count(*) FROM intake").fetchone()[0] == 20
+
+
+def test_an_ordinary_form_is_still_held_to_the_small_limit(signed_in, monkeypatch):
+    monkeypatch.setattr(config, "MAX_BODY_BYTES", 512)
+    response = signed_in.post(
+        "/log/drink",
+        data={"csrf_token": _csrf(signed_in), "beverage": "Water", "volume_l": "0.5", "note": "x" * 2000},
+    )
+    assert response.status_code == 413
+    assert "512" in response.text or "kB" in response.text, "the refusal names the limit"
+
+
+def test_the_same_form_is_accepted_when_it_is_not_oversized(signed_in):
+    """So the test above is measuring the limit, not a malformed request."""
+    response = signed_in.post(
+        "/log/drink",
+        data={"csrf_token": _csrf(signed_in), "beverage": "Water", "volume_l": "0.5", "note": "ok"},
+    )
+    assert response.status_code == 303
+    assert deps.connection().execute("SELECT count(*) FROM intake").fetchone()[0] == 1
+
+
+def test_the_import_has_a_ceiling_of_its_own(signed_in, monkeypatch):
+    monkeypatch.setattr(config, "IMPORT_MAX_BODY_BYTES", 256)
+    response = signed_in.post(
+        "/import",
+        data={"csrf_token": _csrf(signed_in)},
+        files={"file": ("hydration.json", b"{}" + b"x" * 4096, "application/json")},
+    )
+    assert response.status_code == 413
+
+
+def test_a_body_without_a_content_length_is_still_measured(signed_in, monkeypatch):
+    """The header check is a courtesy to a well-behaved client. A chunked
+    request declares no length at all, and only the bytes that arrive count."""
+    monkeypatch.setattr(config, "MAX_BODY_BYTES", 512)
+
+    def chunks():
+        yield b"csrf_token=" + _csrf(signed_in).encode()
+        yield b"&note=" + b"x" * 4096
+
+    response = signed_in.post(
+        "/log/meal",
+        content=chunks(),
+        headers={"content-type": "application/x-www-form-urlencoded"},
+    )
+    assert response.status_code == 413
+
+
+# -- login throttling ------------------------------------------------------
+
+def test_repeated_wrong_passwords_shut_the_door_for_a_while(client):
+    """scrypt makes a guess cost something, but cost is not a limit. This is
+    the only door into a health log."""
+    conn = deps.connection()
+    security.set_password(conn, PASSWORD)
+
+    for _ in range(config.LOGIN_FREE_ATTEMPTS):
+        response = client.post("/login", data={"password": "wrong", "next": "/"})
+        assert response.status_code == 303
+        assert "Locked" not in _flash(response)
+
+    response = client.post("/login", data={"password": "wrong", "next": "/"})
+    assert "Locked" in _flash(response)
+    assert security.login_lock_remaining_s(conn) > 0
+
+
+def test_the_right_password_is_refused_while_the_door_is_shut(client):
+    """Otherwise the lockout is only a message."""
+    conn = deps.connection()
+    security.set_password(conn, PASSWORD)
+    for _ in range(config.LOGIN_FREE_ATTEMPTS + 1):
+        client.post("/login", data={"password": "wrong", "next": "/"})
+
+    response = client.post("/login", data={"password": PASSWORD, "next": "/"})
+    assert "Too many attempts" in _flash(response)
+    assert client.cookies.get(config.SESSION_COOKIE) is None
+
+
+def test_signing_in_clears_the_count(client):
+    conn = deps.connection()
+    security.set_password(conn, PASSWORD)
+    for _ in range(3):
+        client.post("/login", data={"password": "wrong", "next": "/"})
+
+    assert client.post("/login", data={"password": PASSWORD, "next": "/"}).status_code == 303
+    assert security.login_lock_remaining_s(conn) == 0
+    assert db.get_setting(conn, security.LOGIN_FAILURES_KEY) == "0"
+
+
+def test_the_lockout_survives_a_restart(client, tmp_path):
+    """An in-memory counter is cleared by restarting the container, which is
+    not a hard thing to arrange."""
+    conn = deps.connection()
+    security.set_password(conn, PASSWORD)
+    for _ in range(config.LOGIN_FREE_ATTEMPTS + 1):
+        client.post("/login", data={"password": "wrong", "next": "/"})
+
+    db.close()
+    reopened = db.get(config.DB_PATH)
+    assert security.login_lock_remaining_s(reopened) > 0

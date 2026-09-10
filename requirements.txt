@@ -1,12 +1,19 @@
 # Runtime dependencies. Deliberately small -- the whole app is stdlib sqlite3
 # and hand-written SQL, and a smaller surface is a smaller thing to keep working
 # on a machine that is not this one.
-fastapi>=0.110
-uvicorn[standard]>=0.27
-jinja2>=3.1
-python-multipart>=0.0.9
+#
+# Every line carries an upper bound at the next major version. Not to freeze
+# anything -- point releases are what carry the fixes -- but because an
+# unbounded `>=` means a rebuild months from now silently resolves to whatever
+# has shipped since, and the first you hear of a breaking change is the
+# container failing to start on the evening you needed it.
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+jinja2>=3.1,<4.0
+python-multipart>=0.0.9,<1.0
 
-# Unofficial Garmin Connect client. Pinned loosely because Garmin changes its
-# internal endpoints without notice and the fixes arrive as point releases --
-# see providers/garmin.py for why every call through it is wrapped.
-garminconnect>=0.2.25
+# Unofficial Garmin Connect client. The bound here is deliberately the loosest
+# of the lot: Garmin changes its internal endpoints without notice and the
+# fixes arrive as point releases, so this one has to be free to move. Every
+# call through it is wrapped -- see providers/garmin.py for why.
+garminconnect>=0.2.25,<1.0

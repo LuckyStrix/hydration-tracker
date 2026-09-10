@@ -11,6 +11,7 @@ from hydration import db, service
 from hydration.errors import ConflictError, NotFound, ValidationError
 from hydration.model import balance as B
 from hydration.model import constants as k
+from hydration.model import plan as P
 
 UTC = timezone.utc
 EASTERN = ZoneInfo("America/New_York")
@@ -431,3 +432,162 @@ def test_the_baseline_fit_measures_against_what_the_app_actually_showed(tz_conn)
 
     scale = service.load_profile(tz_conn).baseline_loss_scale
     assert scale > 1.0, f"feeling drier than the model said must raise the baseline, got {scale}"
+
+
+# -- the ride's own conditions ---------------------------------------------
+
+def test_garmins_ride_temperature_is_not_replaced_by_the_sensor_at_home(tz_conn):
+    """Garmin reports a temperature and never a humidity. Filling both from the
+    environment table because one was missing threw away the only reading taken
+    where the sweating actually happened -- and temperature is the input the
+    sweat estimate moves most on."""
+    started = at(hour=10)
+    service.log_environment(tz_conn, temp_c=21.0, humidity_pct=45.0, at=started, location="outdoor")
+    service.record_activity(
+        tz_conn, provider="garmin", external_id="1", started_at=started,
+        duration_s=3600, kcal=800, temp_c=34.0,
+    )
+    row = tz_conn.execute("SELECT * FROM activity").fetchone()
+    assert row["temp_c"] == 34.0, "the ride's own temperature survives"
+    assert row["humidity_pct"] == 45.0, "and the missing half is filled in"
+
+
+def test_a_hot_ride_is_estimated_wetter_than_a_temperate_one(tz_conn):
+    """Which is the whole reason the temperature has to survive."""
+    def estimate(temp_c: float) -> float:
+        service.record_activity(
+            tz_conn, provider="garmin", external_id=f"t{temp_c}", started_at=at(hour=10),
+            duration_s=3600, kcal=800, temp_c=temp_c, humidity_pct=45.0,
+        )
+        return tz_conn.execute(
+            "SELECT sweat_ml_estimated FROM activity WHERE external_id = ?", (f"t{temp_c}",)
+        ).fetchone()[0]
+
+    assert estimate(34.0) > estimate(18.0)
+
+
+# -- hand-logged sessions --------------------------------------------------
+
+def test_the_same_hand_logged_session_cannot_be_submitted_twice(tz_conn):
+    """A manual activity has no external id, so the unique index cannot catch a
+    double submit -- and two copies of a ride is two copies of its sweat."""
+    service.log_manual_activity(tz_conn, started_at=at(hour=8), duration_s=1800, kcal=300)
+    with pytest.raises(ConflictError):
+        service.log_manual_activity(tz_conn, started_at=at(hour=8), duration_s=1800, kcal=300)
+    assert tz_conn.execute("SELECT count(*) FROM activity").fetchone()[0] == 1
+
+
+def test_a_retracted_session_leaves_the_slot_free_again(tz_conn):
+    """Retracting is how you correct one, so the correction has to be able to
+    take the same start time."""
+    activity_id = service.log_manual_activity(tz_conn, started_at=at(hour=8), duration_s=1800)
+    service.void_entry(tz_conn, "activity", activity_id, reason="wrong duration")
+    service.log_manual_activity(tz_conn, started_at=at(hour=8), duration_s=3600)
+    assert tz_conn.execute(
+        "SELECT count(*) FROM activity WHERE voided_at IS NULL"
+    ).fetchone()[0] == 1
+
+
+def test_an_activity_in_the_future_is_refused(tz_conn):
+    """Every other writer refuses one. This one used to take it."""
+    with pytest.raises(ValidationError):
+        service.record_activity(
+            tz_conn, started_at=datetime.now(UTC) + timedelta(hours=3), duration_s=1800
+        )
+
+
+# -- calibration without a Garmin sync -------------------------------------
+
+def test_a_weighing_logged_after_the_ride_still_reaches_the_measurement(tz_conn):
+    """The usual order of events: the ride syncs within minutes, the scale
+    reading arrives when you get to it. `record_activity` works the measurement
+    out at insert time, so the pair used to sit there contributing nothing."""
+    started = at(hour=10)
+    service.record_activity(
+        tz_conn, provider="garmin", external_id="1", started_at=started,
+        duration_s=3600, kcal=800, fluid_consumed_ml=500,
+    )
+    assert tz_conn.execute("SELECT sweat_ml_measured FROM activity").fetchone()[0] is None
+
+    service.log_weight(tz_conn, mass_kg=75.0, context="pre_activity", at=started)
+    service.log_weight(tz_conn, mass_kg=73.4, context="post_activity", at=started + timedelta(hours=1))
+
+    row = tz_conn.execute("SELECT * FROM activity").fetchone()
+    assert row["sweat_ml_measured"] == pytest.approx(2100.0)
+    assert row["sweat_source"] == "measured"
+
+
+def test_the_calibration_fits_without_a_garmin_sync_behind_it(tz_conn):
+    """It only ever re-fitted at the end of a sync run, so anyone logging by
+    hand stayed on the population model however many sessions they weighed."""
+    started = at(hour=6)
+    for day in range(5):
+        when = started + timedelta(days=day)
+        service.log_manual_activity(tz_conn, started_at=when, duration_s=3600, kcal=800)
+        service.log_weight(tz_conn, mass_kg=75.0, context="pre_activity", at=when)
+        service.log_weight(
+            tz_conn, mass_kg=73.5, context="post_activity", at=when + timedelta(hours=1)
+        )
+
+    row = service.profile_row(tz_conn)
+    assert row["sweat_calibration_n"] == 5
+    assert row["sweat_calibration"] != 1.0
+
+
+def test_a_morning_weighing_does_not_disturb_any_activity(tz_conn):
+    """Only a pre/post pair measures a session. The morning weight is an
+    observer of overall state and must not be read as one leg of a pair."""
+    started = at(hour=6)
+    service.record_activity(
+        tz_conn, provider="garmin", external_id="1", started_at=started, duration_s=3600, kcal=800,
+    )
+    before = tz_conn.execute("SELECT sweat_ml_used, sweat_source FROM activity").fetchone()
+    service.log_weight(tz_conn, mass_kg=75.0, context="morning", at=started + timedelta(minutes=10))
+    after = tz_conn.execute("SELECT sweat_ml_used, sweat_source FROM activity").fetchone()
+    assert tuple(after) == tuple(before)
+
+
+# -- the recommendation log ------------------------------------------------
+
+def test_polling_the_status_does_not_fill_the_recommendation_log(tz_conn):
+    """Home Assistant polls /api/v1/status once a minute. The headline carries
+    a clock time -- "...every 20 min until 5:40 PM" -- which advances with the
+    wall clock, so comparing rendered headlines made every poll look like new
+    advice and wrote 1440 rows a day."""
+    now = at(hour=14)
+    service.log_void(tz_conn, colour=6, at=now - timedelta(hours=1))
+
+    written = 0
+    for minute in range(120):
+        _, plan = service.current_state(tz_conn, now=now + timedelta(minutes=minute))
+        written += bool(service.record_recommendation(tz_conn, plan))
+
+    assert written == 1, "two hours of polling is one piece of advice"
+
+
+def test_advice_that_actually_changes_is_still_recorded(tz_conn):
+    """The log has to stay useful -- it is what makes the advice falsifiable."""
+    now = at(hour=8)
+    _, first = service.current_state(tz_conn, now=now)
+    assert service.record_recommendation(tz_conn, first)
+
+    # A litre and a half of sweat is a different situation.
+    service.record_activity(
+        tz_conn, provider="garmin", external_id="1", started_at=now + timedelta(hours=1),
+        duration_s=5400, kcal=1000, sweat_ml_reported=1800,
+    )
+    _, second = service.current_state(tz_conn, now=now + timedelta(hours=3))
+    assert service.record_recommendation(tz_conn, second)
+    assert tz_conn.execute("SELECT count(*) FROM recommendation").fetchone()[0] == 2
+
+
+def test_a_change_of_status_is_always_recorded(tz_conn):
+    """Even a small one. Crossing from 'drink' to 'drink now' is the moment
+    worth being able to look back at."""
+    now = at(hour=12)
+    _, plan = service.current_state(tz_conn, now=now)
+    service.record_recommendation(tz_conn, plan)
+
+    row = tz_conn.execute("SELECT * FROM recommendation ORDER BY at DESC LIMIT 1").fetchone()
+    nudged = P.Plan(**{**plan.__dict__, "status": "drink_urgent"})
+    assert service._materially_different(row, nudged)

@@ -1,3 +1,8 @@
 -r requirements.txt
-pytest>=8.0
-httpx>=0.27
+pytest>=8.0,<9.0
+httpx>=0.27,<1.0
+
+# Lint only, and a narrow rule set: pyflakes and bugbear, which find real
+# mistakes, rather than the formatting rules, which would churn a codebase
+# whose layout is deliberate. Configured in pyproject.toml.
+ruff>=0.6,<1.0

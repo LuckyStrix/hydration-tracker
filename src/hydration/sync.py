@@ -65,6 +65,7 @@ def run_sync_once(connection: sqlite3.Connection, *, interactive: bool = False) 
         return _record_failure(connection, f"fetch failed: {exc}")
 
     added = 0
+    failed = 0
     for activity in activities:
         try:
             service.record_activity(
@@ -86,6 +87,7 @@ def run_sync_once(connection: sqlite3.Connection, *, interactive: bool = False) 
             )
             added += 1
         except Exception as exc:
+            failed += 1
             log.warning("could not record activity %s: %s", activity.external_id, exc)
 
     weights = 0
@@ -105,16 +107,54 @@ def run_sync_once(connection: sqlite3.Connection, *, interactive: bool = False) 
             log.warning("could not record weigh-in: %s", exc)
 
     factor, count = service.refit_sweat_calibration(connection)
+    _write_back(connection, client)
 
     with db.transaction(connection):
-        db.set_setting(connection, CURSOR, db.to_iso(now))
-        db.set_setting(connection, LAST_OK, db.to_iso(now))
-        db.set_setting(connection, LAST_ERROR, None)
+        # The cursor only moves when everything landed. Moving it regardless
+        # meant anything that failed got one more chance inside the two-day
+        # overlap and was then stepped over for good -- a transient error
+        # losing a ride permanently, quietly, with a warning in a log nobody
+        # reads.
+        if failed:
+            db.set_setting(connection, LAST_ERROR, f"{failed} activities could not be recorded")
+        else:
+            db.set_setting(connection, CURSOR, db.to_iso(now))
+            db.set_setting(connection, LAST_OK, db.to_iso(now))
+            db.set_setting(connection, LAST_ERROR, None)
 
     message = f"Synced {added} activities and {weights} new weigh-ins."
+    if failed:
+        message += f" {failed} could not be recorded and will be retried."
     if count:
         message += f" Sweat calibration now {factor:.2f} from {count} weighed sessions."
-    return {"ok": True, "message": message, "activities": added, "weights": weights}
+    return {
+        "ok": not failed,
+        "message": message,
+        "activities": added,
+        "weights": weights,
+        "failed": failed,
+    }
+
+
+def _write_back(connection: sqlite3.Connection, client) -> None:
+    """Push today's logged total into Garmin's own hydration log.
+
+    Off unless HYDRATION_GARMIN_WRITE_BACK is set, and one-directional even
+    then: we never read our own number back, so the two systems cannot argue.
+    Failures are swallowed on purpose -- this is a courtesy to the watch
+    widget, and it must not be able to fail a sync that otherwise worked.
+    """
+    if not config.GARMIN_WRITE_BACK:
+        return
+    from .providers import garmin
+
+    try:
+        profile = service.load_profile(connection)
+        today = datetime.now(profile.tz).date()
+        total_ml = service.intake_ml_on(connection, today, profile.tz)
+        garmin.push_hydration(client, today, total_ml)
+    except Exception as exc:
+        log.warning("could not write hydration back to garmin: %s", exc)
 
 
 def _weight_already_recorded(connection: sqlite3.Connection, moment: datetime) -> bool:

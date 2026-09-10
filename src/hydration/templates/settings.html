@@ -70,6 +70,22 @@
       <label class="field"><span>How far to trust urine colour (0&ndash;1)</span>
         <input type="number" name="trust_urine" step="0.05" min="0" max="1" value="{{ row['trust_urine'] }}"></label>
     </div>
+
+    <div class="row">
+      <label class="field"><span>Water from food, mL/day</span>
+        <input type="number" name="food_water_ml_day" step="50" min="0" max="2500" value="{{ row['food_water_ml_day'] | round | int }}">
+        <span class="small muted">Used only on days with no meals logged; a logged meal wins.</span>
+      </label>
+      <label class="field"><span>Does caffeine make you go?</span>
+        <select name="caffeine_diuresis_ml_mg">
+          {% for option in caffeine_options %}
+          <option value="{{ option.value }}"{% if option.selected %} selected{% endif %}>
+            {{ option.label }} &mdash; {{ option.hint }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+    </div>
     <button type="submit" class="primary">Save</button>
   </form>
 </div>
@@ -136,6 +152,32 @@
       <button type="submit" class="primary">Sync now</button>
     </form>
   {% endif %}
+</div>
+
+<div class="card">
+  <h2>Backups</h2>
+  <p class="sub">
+    {% if backups.automatic %}
+      Every {{ backups.every_hours }} h, keeping the newest {{ backups.keep }}, in
+      <code>{{ backups.directory }}</code>.
+    {% else %}
+      Scheduled backups are switched off. Take them yourself with
+      <code>docker compose exec hydration hydration backup</code>.
+    {% endif %}
+    {% if backups.last_backup %}Last one {{ backups.last_backup | ago }}.{% else %}None taken yet.{% endif %}
+  </p>
+  {% if backups.last_error %}
+    <div class="flag"><strong>Last backup failed.</strong> {{ backups.last_error }}</div>
+  {% endif %}
+  <p class="small muted">
+    Copies are written with <code>VACUUM INTO</code>, so each one is consistent even while the
+    app is running. To put one back:
+    <code>docker compose exec hydration hydration restore /backups/&lt;file&gt;.db</code>
+  </p>
+  <form method="post" action="/settings/backup">
+    {{ csrf(csrf_token) }}
+    <button type="submit">Back up now</button>
+  </form>
 </div>
 
 <div class="card">

@@ -9,11 +9,12 @@ hard to notice afterwards.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+import sqlite3
+from datetime import datetime, timezone
 
 import pytest
 
-from hydration import db, portability, security, service
+from hydration import portability, security, service
 from hydration.errors import ValidationError
 
 UTC = timezone.utc
@@ -73,7 +74,8 @@ def test_the_export_never_carries_credentials(populated):
 
 
 def test_the_csv_is_readable_by_a_spreadsheet(populated):
-    import csv, io
+    import csv
+    import io
 
     rows = list(csv.DictReader(io.StringIO(portability.export_csv(populated))))
     assert rows
@@ -171,6 +173,6 @@ def test_an_import_is_all_or_nothing(populated, conn_factory):
 
     fresh = conn_factory()
     before = _counts(fresh)
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.IntegrityError):
         portability.import_payload(fresh, payload)
     assert _counts(fresh) == before, "a failed import left rows behind"

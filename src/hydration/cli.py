@@ -12,6 +12,7 @@ import getpass
 import logging
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import config, db, security, service
 
@@ -64,10 +65,56 @@ def cmd_backup(args) -> int:
     thing.
     """
     connection = _connection()
+    directory = args.into or config.BACKUP_DIR
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    target = (args.into or config.BACKUP_DIR) / f"hydration-{stamp}.db"
-    written = db.backup(connection, target)
+    written = db.backup(connection, directory / f"hydration-{stamp}.db")
     print(f"Wrote {written} ({written.stat().st_size / 1024:.0f} kB)")
+    if args.keep:
+        for removed in db.prune_backups(directory, args.keep):
+            print(f"Pruned {removed.name}")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    """Put a backup back.
+
+    Destructive, and the one command here that is, so it says exactly what it
+    is about to overwrite and takes a copy of the current database first --
+    restoring the wrong file should cost a minute, not a history.
+    """
+    connection = _connection()
+    source = args.backup
+
+    # Check the file before anything destructive happens, so a bad one costs
+    # nothing at all rather than costing a pointless safety copy first.
+    try:
+        counts = db.inspect_backup(source)
+    except (FileNotFoundError, db.NotABackup) as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        print(f"Nothing was changed. Your database is still at {config.DB_PATH}.", file=sys.stderr)
+        return 1
+
+    if not args.force:
+        current = connection.execute("SELECT count(*) FROM intake").fetchone()[0]
+        print(f"This replaces the database at {config.DB_PATH} ({current} drinks logged)")
+        print(f"with {source}, which holds {counts['intake']} drinks.")
+        if input("Type 'restore' to go ahead: ").strip() != "restore":
+            print("Nothing done.")
+            return 1
+
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    safety = db.backup(
+        connection, db.unused_backup_path(config.BACKUP_DIR, f"hydration-{stamp}-before-restore")
+    )
+    print(f"Current database saved to {safety} first.")
+
+    db.restore(connection, source)
+
+    # The restored file may predate the current schema, so bring it up to date
+    # exactly as a container start would.
+    db.init(connection)
+    print("Restored: " + ", ".join(f"{count} {table}" for table, count in counts.items()))
+    print("Restart the application if it is running, so nothing is holding stale state.")
     return 0
 
 
@@ -121,8 +168,17 @@ def main(argv: list[str] | None = None) -> int:
     subs.add_parser("status", help="print the current plan").set_defaults(fn=cmd_status)
 
     backup = subs.add_parser("backup", help="write a consistent database copy")
-    backup.add_argument("--into", type=lambda p: __import__("pathlib").Path(p), default=None)
+    backup.add_argument("--into", type=Path, default=None)
+    backup.add_argument(
+        "--keep", type=int, default=None,
+        help="delete all but this many of the backups in the directory afterwards",
+    )
     backup.set_defaults(fn=cmd_backup)
+
+    restore = subs.add_parser("restore", help="replace the database with a backup")
+    restore.add_argument("backup", type=Path, help="the .db file to restore from")
+    restore.add_argument("--force", action="store_true", help="skip the confirmation")
+    restore.set_defaults(fn=cmd_restore)
 
     serve = subs.add_parser("serve", help="run the web server")
     serve.add_argument("--host", default=None)

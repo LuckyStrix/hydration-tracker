@@ -82,6 +82,65 @@ def bootstrap_password(connection: sqlite3.Connection) -> None:
         set_password(connection, config.PASSWORD)
 
 
+# -- login throttling ------------------------------------------------------
+#
+# scrypt makes each guess cost something, but cost alone is not a limit: left
+# alone, an attacker on the tailnet gets as many tries as they have patience
+# for. This is the one door into a health log, and it is a single short
+# password with no second factor behind it.
+#
+# The counter lives in `setting` rather than in memory on purpose. An in-memory
+# lockout is lifted by restarting the container, which is not a hard thing to
+# arrange, and a lockout you can clear is not a lockout.
+
+LOGIN_FAILURES_KEY = "auth.login_failures"
+LOGIN_LOCKED_UNTIL_KEY = "auth.login_locked_until"
+
+LOGIN_LOCKOUT_BASE_S = 30.0
+LOGIN_LOCKOUT_MAX_S = 900.0
+"""Doubling from half a minute up to a quarter of an hour. The shape matters
+more than the numbers: the first few extra attempts are cheap enough not to
+punish a bad morning, and a sustained run becomes slow enough to be pointless
+long before it becomes a guessing budget."""
+
+
+def login_lock_remaining_s(connection: sqlite3.Connection) -> float:
+    """Seconds until another attempt is allowed. Zero means go ahead."""
+    raw = db.get_setting(connection, LOGIN_LOCKED_UNTIL_KEY)
+    if not raw:
+        return 0.0
+    try:
+        until = db.from_iso(raw)
+    except ValueError:
+        return 0.0
+    return max(0.0, (until - datetime.now(timezone.utc)).total_seconds())
+
+
+def record_failed_login(connection: sqlite3.Connection) -> float:
+    """Count a wrong password and return how long the door is now shut for."""
+    try:
+        failures = int(db.get_setting(connection, LOGIN_FAILURES_KEY) or 0) + 1
+    except ValueError:
+        failures = 1
+
+    over = failures - config.LOGIN_FREE_ATTEMPTS
+    lock_s = min(LOGIN_LOCKOUT_BASE_S * 2 ** (over - 1), LOGIN_LOCKOUT_MAX_S) if over > 0 else 0.0
+
+    with db.transaction(connection):
+        db.set_setting(connection, LOGIN_FAILURES_KEY, str(failures))
+        if lock_s > 0:
+            until = datetime.now(timezone.utc) + timedelta(seconds=lock_s)
+            db.set_setting(connection, LOGIN_LOCKED_UNTIL_KEY, db.to_iso(until))
+    return lock_s
+
+
+def clear_login_failures(connection: sqlite3.Connection) -> None:
+    """Called on a successful sign-in, and nowhere else."""
+    with db.transaction(connection):
+        db.set_setting(connection, LOGIN_FAILURES_KEY, "0")
+        db.set_setting(connection, LOGIN_LOCKED_UNTIL_KEY, None)
+
+
 # -- sessions --------------------------------------------------------------
 
 def create_session(connection: sqlite3.Connection, user_agent: str | None = None) -> str:
