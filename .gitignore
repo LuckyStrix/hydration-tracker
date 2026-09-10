@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# Local data. None of this belongs in the repository: the database is a
+# personal health log, and .env holds Garmin credentials and the bootstrap
+# password.
+.env
+data/
+*.db
+*.db-wal
+*.db-shm
+garmin_tokens/
+
+# Backups are consistent database copies -- same content, same reason.
+backups/*
+!backups/.gitkeep
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

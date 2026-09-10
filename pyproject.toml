@@ -1,0 +1,26 @@
+[project]
+name = "hydration-tracker"
+version = "0.1.0"
+description = "Personal hydration tracker: water-balance ledger corrected by urine colour, body weight and Garmin sweat loss."
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+[project.scripts]
+hydration = "hydration.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hydration = ["*.sql", "templates/*.html", "static/*"]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

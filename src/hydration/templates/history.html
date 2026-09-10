@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% from "_macros.html" import entry_row %}
+{% block title %}History &middot; Hydration{% endblock %}
+{% block body %}
+
+<div class="card">
+  <h2>Range</h2>
+  <div class="ranges">
+    {% for r in ranges %}
+      <a href="/history?days={{ r }}" {% if r == days %}class="on"{% endif %}>{{ r }} day{{ 's' if r > 1 }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="tiles">
+  <div class="tile"><div class="label">Drunk</div><div class="value">{{ totals.intake_ml | litres }}</div>
+    <div class="foot">{{ (totals.intake_ml / days) | litres }} per day</div></div>
+  <div class="tile"><div class="label">Sweated</div><div class="value">{{ totals.sweat_ml | litres }}</div>
+    <div class="foot">{{ (totals.sweat_ml / days) | litres }} per day</div></div>
+  <div class="tile"><div class="label">Voids logged</div><div class="value">{{ totals.voids }}</div>
+    <div class="foot">{{ (totals.voids / days) | round(1) }} per day</div></div>
+  <div class="tile"><div class="label">Sodium gap</div><div class="value">{{ totals.sodium_gap_mg | round | int }} mg</div>
+    <div class="foot">sweat losses not replaced</div></div>
+</div>
+
+<div class="card">
+  <h2>Body water</h2>
+  <p class="sub">
+    Ledger against observation. Where a marker sits far from the line, the model and
+    your body disagreed &mdash; a run of those in one direction is a tuning signal, not noise.
+  </p>
+  {{ deficit_chart | safe }}
+</div>
+
+<div class="grid-2">
+  <div class="card">
+    <h2>Intake by drink</h2>
+    {{ intake_chart | safe }}
+  </div>
+  <div class="card">
+    <h2>Drunk against sweated</h2>
+    <p class="sub">Both are millilitres of water, so they share one axis.</p>
+    {{ sweat_chart | safe }}
+  </div>
+</div>
+
+<div class="card">
+  <h2>Urine colour</h2>
+  <p class="sub">Hollow, dashed markers are low-confidence readings &mdash; first of the morning, or too soon after a drink.</p>
+  {{ urine_chart | safe }}
+</div>
+
+<div class="card">
+  <h2>Morning weight</h2>
+  <p class="sub">The gap between the dots and the trend is water, not mass.</p>
+  {{ weight_chart | safe }}
+</div>
+
+<div class="card">
+  <h2>Recent entries</h2>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>When</th><th>What</th><th class="num">Amount</th><th>Source</th><th></th></tr></thead>
+    <tbody>
+      {% for entry in entries %}
+      <tr>
+        <td class="muted small">{{ entry.at | stamp }}</td>
+        <td><span class="kind kind-{{ entry.kind }}"></span>{{ entry.label }}</td>
+        <td class="num">
+          {% if entry.kind in ('intake', 'meal') %}{{ entry.amount | litres }}
+          {% elif entry.kind == 'weight' %}{{ entry.amount | pounds }}
+          {% elif entry.kind == 'activity' %}{{ entry.amount | litres }} sweat
+          {% else %}&mdash;{% endif %}
+        </td>
+        <td class="muted small">{{ entry.source }}</td>
+        <td></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

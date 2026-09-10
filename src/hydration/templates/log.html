@@ -1,0 +1,154 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf, colour_picker %}
+{% block title %}Log &middot; Hydration{% endblock %}
+{% block body %}
+
+<div class="grid-2">
+
+  <div class="card">
+    <h2>Drink</h2>
+    <form method="post" action="/log/drink">
+      {{ csrf(csrf_token) }}
+      <label class="field"><span>What</span>
+        <select name="beverage">
+          {% for b in beverages %}<option value="{{ b['name'] }}">{{ b['name'] }}</option>{% endfor %}
+        </select>
+      </label>
+      <div class="row">
+        <label class="field"><span>Litres</span>
+          <input type="number" name="volume_l" step="0.05" min="0.05" max="5" value="0.35" required>
+        </label>
+        <label class="field"><span>Sodium, mg (optional)</span>
+          <input type="number" name="sodium_mg" step="10" min="0" placeholder="from the catalogue">
+        </label>
+      </div>
+      <label class="field"><span>When</span>
+        <input type="datetime-local" name="at" value="{{ now_local }}">
+      </label>
+      <label class="field"><span>Note</span><input type="text" name="note"></label>
+      <button type="submit" class="primary">Log drink</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Bathroom</h2>
+    <p class="sub">
+      Timing changes what a colour means, so log when it happened. A sample soon
+      after a big drink, or the first of the morning, counts for much less.
+    </p>
+    <form method="post" action="/log/void">
+      {{ csrf(csrf_token) }}
+      {{ colour_picker() }}
+      <div class="row">
+        <label class="field"><span>Volume, litres (optional)</span>
+          <input type="number" name="volume_l" step="0.05" min="0" placeholder="if you measured">
+        </label>
+        <label class="field"><span>Urgency</span>
+          <select name="urgency">
+            <option value="">&mdash;</option>
+            {% for u in range(1, 6) %}<option value="{{ u }}">{{ u }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label class="field"><span>When</span>
+        <input type="datetime-local" name="at" value="{{ now_local }}">
+      </label>
+      <button type="submit" class="primary">Log void</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Weight</h2>
+    <p class="sub">
+      Morning weight is the strongest reading this app has. A pre- and post-session
+      pair measures that session's sweat loss outright, which beats every estimate.
+    </p>
+    <form method="post" action="/log/weight">
+      {{ csrf(csrf_token) }}
+      <div class="row">
+        <label class="field"><span>Pounds</span>
+          <input type="number" name="mass_lb" step="0.1" min="40" max="800" required>
+        </label>
+        <label class="field"><span>Context</span>
+          <select name="context">
+            <option value="morning">Morning</option>
+            <option value="pre_activity">Before a session</option>
+            <option value="post_activity">After a session</option>
+            <option value="other">Other</option>
+          </select>
+        </label>
+      </div>
+      <label class="field"><span>When</span>
+        <input type="datetime-local" name="at" value="{{ now_local }}">
+      </label>
+      <button type="submit" class="primary">Log weight</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Meal</h2>
+    <p class="sub">
+      Rough is fine. Logging a salty dinner mostly stops the app asking you to take
+      sodium you already ate.
+    </p>
+    <form method="post" action="/log/meal">
+      {{ csrf(csrf_token) }}
+      <label class="field"><span>What</span><input type="text" name="label" placeholder="e.g. ramen"></label>
+      <div class="row">
+        <label class="field"><span>Water content, litres</span>
+          <input type="number" name="water_l" step="0.05" min="0" value="0.30">
+        </label>
+        <label class="field"><span>Sodium, mg</span>
+          <input type="number" name="sodium_mg" step="50" min="0" value="800">
+        </label>
+      </div>
+      <button type="submit" class="primary">Log meal</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>How you feel</h2>
+    <form method="post" action="/log/symptom">
+      {{ csrf(csrf_token) }}
+      <div class="row">
+        <label class="field"><span>Symptom</span>
+          <select name="kind">
+            <option>thirst</option><option>headache</option><option>cramp</option>
+            <option>dizzy</option><option>fatigue</option><option>nausea</option>
+          </select>
+        </label>
+        <label class="field"><span>Severity</span>
+          <select name="severity">
+            {% for s in range(1, 6) %}<option value="{{ s }}" {% if s == 2 %}selected{% endif %}>{{ s }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label class="field"><span>Note</span><input type="text" name="note"></label>
+      <button type="submit" class="primary">Log symptom</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Activity by hand</h2>
+    <p class="sub">For anything Garmin did not record. Leave sweat blank and it will be estimated.</p>
+    <form method="post" action="/log/activity">
+      {{ csrf(csrf_token) }}
+      <label class="field"><span>Name</span><input type="text" name="name" placeholder="e.g. lunch ride"></label>
+      <div class="row">
+        <label class="field"><span>Started</span>
+          <input type="datetime-local" name="at" value="{{ now_local }}" required>
+        </label>
+        <label class="field"><span>Minutes</span>
+          <input type="number" name="duration_min" step="1" min="1" value="60" required>
+        </label>
+      </div>
+      <div class="row">
+        <label class="field"><span>Calories</span><input type="number" name="kcal" step="10" min="0"></label>
+        <label class="field"><span>Sweat, litres</span><input type="number" name="sweat_l" step="0.1" min="0" placeholder="estimated"></label>
+      </div>
+      <button type="submit" class="primary">Record activity</button>
+    </form>
+  </div>
+
+</div>
+{% endblock %}

@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in &middot; Hydration{% endblock %}
+{% block body %}
+<div class="card" >
+  <h2>Sign in</h2>
+  <form method="post" action="/login">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="next" value="{{ next }}">
+    <label class="field"><span>Password</span>
+      <input type="password" name="password" autocomplete="current-password" required autofocus>
+    </label>
+    <button type="submit" class="primary">Sign in</button>
+  </form>
+</div>
+{% endblock %}

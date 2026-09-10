@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% from "_macros.html" import csrf, colour_picker, entry_row %}
+{% block title %}Today &middot; Hydration{% endblock %}
+{% block head %}
+{# No JS available to poll, so the page refreshes itself. Two minutes is long
+   enough not to interrupt typing into a form and short enough that a glance at
+   a propped-up phone is current. #}
+<meta http-equiv="refresh" content="120">
+{% endblock %}
+
+{% block body %}
+
+<div class="card headline-card">
+  <div class="gauge">
+    <svg viewBox="0 0 120 120" role="img" aria-label="Deficit {{ plan.deficit_pct | signed_pct }} of body mass">
+      <circle class="gauge-track" cx="60" cy="60" r="50"></circle>
+      <circle class="gauge-value gauge-{{ gauge.tone }}" cx="60" cy="60" r="50"
+              stroke-dasharray="{{ (gauge.dash * 3.1416) | round(1) }} 1000"></circle>
+    </svg>
+    <div class="gauge-number">
+      <strong>{{ plan.deficit_ml | signed_litres }}</strong><br>
+      {{ plan.deficit_pct | signed_pct }} of body mass
+    </div>
+  </div>
+
+  <div class="headline-body">
+    <span class="status-chip status-{{ plan.status }}">
+      {% if plan.status == 'ok' %}&#10003; on track
+      {% elif plan.status == 'drink' %}&#9679; drink
+      {% elif plan.status == 'drink_urgent' %}&#9650; drink now
+      {% elif plan.status == 'add_sodium' %}&#9670; add sodium
+      {% else %}&#9632; slow down{% endif %}
+    </span>
+    <p class="headline">{{ plan.headline }}</p>
+
+    {% if plan.detail %}
+    <ul class="detail">
+      {% for line in plan.detail %}<li>{{ line }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if plan.medical_flags %}
+    <div class="flags">
+      {% for flag in plan.medical_flags %}
+      <div class="flag"><strong>Worth attention.</strong> {{ flag }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="tiles">
+  <div class="tile">
+    <div class="label">Drunk today</div>
+    <div class="value">{{ plan.daily_intake_ml | litres }}</div>
+    <div class="foot">of {{ plan.daily_target_ml | litres }} target</div>
+    {# Width comes from a class, not a style attribute: the CSP has no
+       'unsafe-inline' for styles, so an inline width would be dropped and every
+       meter would render empty. Rounded to the nearest 5% so the class list
+       stays 21 rules rather than 101. #}
+    <div class="meter"><i class="w-{{ ((daily_pct / 5) | round | int) * 5 }}"></i></div>
+    <div class="foot">{{ daily_pct }}% of target</div>
+  </div>
+  <div class="tile">
+    <div class="label">Next drink</div>
+    <div class="value">{% if plan.next_dose %}{{ plan.next_dose.volume_ml | litres }}{% else %}&mdash;{% endif %}</div>
+    <div class="foot">{% if plan.next_dose %}at {{ plan.next_dose.at | clock }}{% else %}nothing scheduled{% endif %}</div>
+  </div>
+  <div class="tile">
+    <div class="label">Sodium gap</div>
+    <div class="value">{{ plan.sodium.gap_mg | round | int }} mg</div>
+    <div class="foot">{% if plan.sodium.recommend %}take {{ plan.sodium.recommended_mg | round | int }} mg{% else %}nothing needed{% endif %}</div>
+  </div>
+  <div class="tile">
+    <div class="label">Sweat, 24 h</div>
+    <div class="value">{{ sweat_24h_ml | litres }}</div>
+    <div class="foot">{{ timeline.final.temp_c | fahrenheit }}, {{ timeline.final.humidity_pct | round | int }}% RH</div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Quick log</h2>
+  <p class="sub">One tap. Everything else is on the <a href="/log">log page</a>.</p>
+  <div class="grid-2">
+    <div>
+      <div class="quick">
+        {% for litres in quick_volumes %}
+        <form method="post" action="/log/drink">
+          {{ csrf(csrf_token) }}
+          <input type="hidden" name="beverage" value="Water">
+          <input type="hidden" name="volume_l" value="{{ litres }}">
+          <button type="submit">{{ "%.2f"|format(litres) }} L</button>
+        </form>
+        {% endfor %}
+      </div>
+      <p class="small muted">Water, straight in. Anything else, use the form below.</p>
+
+      <form method="post" action="/log/drink">
+        {{ csrf(csrf_token) }}
+        <label class="field"><span>Drink</span>
+          <select name="beverage">
+            {% for b in beverages %}<option value="{{ b['name'] }}">{{ b['name'] }}</option>{% endfor %}
+          </select>
+        </label>
+        <div class="row">
+          <label class="field"><span>Litres</span>
+            <input type="number" name="volume_l" step="0.05" min="0.05" max="5" value="0.35" required>
+          </label>
+          <div><button type="submit" class="primary">Log drink</button></div>
+        </div>
+      </form>
+    </div>
+
+    <div>
+      <form method="post" action="/log/void">
+        {{ csrf(csrf_token) }}
+        <label class="field"><span>Bathroom &mdash; colour from the chart</span></label>
+        {{ colour_picker() }}
+        <button type="submit" class="primary">Log void</button>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>Body water, last 3 days</h2>
+  <p class="sub">
+    The line is what the ledger believes. Each marker is a reading that disagreed with it &mdash;
+    hover to see by how much, and why it was weighted the way it was.
+  </p>
+  {{ deficit_chart | safe }}
+</div>
+
+<div class="card">
+  <h2>Today's entries</h2>
+  {% if entries %}
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Time</th><th>What</th><th class="num">Amount</th><th>Source</th><th></th></tr></thead>
+    <tbody>
+      {% for entry in entries %}{{ entry_row(entry, csrf_token, '/') }}{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <p class="muted">Nothing logged yet today.</p>
+  {% endif %}
+</div>
+
+{% endblock %}

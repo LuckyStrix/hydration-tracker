@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Activities &middot; Hydration{% endblock %}
+{% block body %}
+
+<div class="card">
+  <h2>Sessions</h2>
+  <p class="sub">
+    Three sweat figures side by side, never collapsed into one. Garmin's estimate, this
+    app's estimate from calories and conditions, and &mdash; when you weighed yourself either
+    side &mdash; what actually left. The measured column is what the model calibrates against.
+  </p>
+
+  {% if activities %}
+  <div class="scroll-x">
+  <table>
+    <thead>
+      <tr>
+        <th>When</th><th>Session</th><th class="num">Time</th><th class="num">kcal</th>
+        <th class="num">Garmin</th><th class="num">Estimated</th><th class="num">Measured</th>
+        <th>Used</th><th class="num">Sodium lost</th><th class="num">Should have drunk</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for item in activities %}
+      {% set row = item.row %}
+      <tr>
+        <td class="muted small">{{ row['started_at'] | stamp }}</td>
+        <td>{{ row['name'] or row['activity_type'] or 'Activity' }}</td>
+        <td class="num">{{ row['duration_s'] | duration }}</td>
+        <td class="num">{% if row['kcal'] %}{{ row['kcal'] | round | int }}{% else %}—{% endif %}</td>
+        <td class="num">{% if row['sweat_ml_reported'] %}{{ row['sweat_ml_reported'] | litres }}{% else %}—{% endif %}</td>
+        <td class="num">{% if row['sweat_ml_estimated'] %}{{ row['sweat_ml_estimated'] | litres }}{% else %}—{% endif %}</td>
+        <td class="num">{% if row['sweat_ml_measured'] %}{{ row['sweat_ml_measured'] | litres }}{% else %}—{% endif %}</td>
+        <td><span class="chip">{{ row['sweat_source'] }}</span></td>
+        <td class="num">{{ item.sodium_lost_mg | round | int }} mg</td>
+        <td class="num">{{ item.post_target_ml | litres }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">
+    "Should have drunk" replaces 135% of what was lost &mdash; some of what you drink leaves
+    as urine before it is retained.
+  </p>
+  {% else %}
+  <p class="muted">
+    No activities yet. Connect Garmin on the <a href="/settings">settings page</a>, or add one
+    by hand from the <a href="/log">log page</a>.
+  </p>
+  {% endif %}
+</div>
+{% endblock %}

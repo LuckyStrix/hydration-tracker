@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block title %}Insights &middot; Hydration{% endblock %}
+{% block body %}
+
+<div class="card">
+  <h2>Is the model right about you?</h2>
+  <p class="sub">
+    Every constant in the ledger is a population average. This is the check that it
+    suits you in particular &mdash; without it the advice would be unfalsifiable.
+  </p>
+  {% if bias.count %}
+    <div class="tiles">
+      <div class="tile">
+        <div class="label">Readings compared</div>
+        <div class="value">{{ bias.count }}</div>
+        <div class="foot">urine and weight, last 30 days</div>
+      </div>
+      <div class="tile">
+        <div class="label">Average disagreement</div>
+        <div class="value">{{ bias.mean_ml | signed_litres }}</div>
+        <div class="foot">ledger reads {{ bias.direction }}</div>
+      </div>
+      <div class="tile">
+        <div class="label">Typical size</div>
+        <div class="value">{{ bias.abs_mean_ml | litres }}</div>
+        <div class="foot">regardless of direction</div>
+      </div>
+    </div>
+    <p>{{ bias.reading }}</p>
+  {% else %}
+    <p class="muted">
+      Nothing to compare yet. Log some voids and morning weights and this fills in.
+    </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>Your sweat rate</h2>
+  {% if calibration.count %}
+    <p>
+      Fitted from <strong>{{ calibration.count }}</strong> weighed sessions: your actual sweat
+      loss runs <strong>{{ (calibration.factor * 100) | round | int }}%</strong> of what the
+      population model predicts. That factor is applied to every estimate from here on.
+    </p>
+  {% else %}
+    <p class="muted">
+      Still using the population model. Weigh yourself immediately before and after a
+      session &mdash; four of those and this becomes a number about you rather than about
+      people in general.
+    </p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h2>When you fall behind</h2>
+  <p class="sub">
+    Average deficit by hour of the day, last 30 days. This is the one that changes
+    behaviour: being reliably down at 3pm is a habit problem, not a bottle problem.
+  </p>
+  <div class="scroll-x">
+  <table>
+    <thead><tr><th>Hour</th><th class="num">Average deficit</th><th>&nbsp;</th></tr></thead>
+    <tbody>
+      {% for row in by_hour %}
+      {% if row.mean_pct > 0.05 or row.mean_pct < -0.05 %}
+      <tr>
+        <td>{{ row.label }}</td>
+        <td class="num">{{ row.mean_pct | signed_pct }}</td>
+        <td>
+          <div class="meter"><i class="w-{{ ((([row.mean_pct, 0] | max) / 3 * 100 / 5) | round | int) * 5 }}"></i></div>
+        </td>
+      </tr>
+      {% endif %}
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}

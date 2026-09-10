@@ -1,0 +1,42 @@
+{% macro csrf(token) %}<input type="hidden" name="csrf_token" value="{{ token }}">{% endmacro %}
+
+{% macro colour_picker(selected=none) %}
+{# The chart itself, as the input. A dropdown of numbers would make you
+   translate twice: swatch to number in your head, number to meaning in the
+   model. #}
+<div class="swatch-row">
+  {% for c in range(1, 9) %}
+    <label>
+      <input type="radio" name="colour" value="{{ c }}" {% if selected == c %}checked{% elif not selected and c == 3 %}checked{% endif %} required>
+      <i class="uc-{{ c }}"></i>
+      {{ c }}
+    </label>
+  {% endfor %}
+</div>
+{% endmacro %}
+
+{% macro retract(token, table, row_id, back) %}
+<form method="post" action="/log/retract">
+  {{ csrf(token) }}
+  <input type="hidden" name="table" value="{{ table }}">
+  <input type="hidden" name="row_id" value="{{ row_id }}">
+  <input type="hidden" name="back" value="{{ back }}">
+  <button type="submit" class="quiet" title="Retract this entry. It stays in the history, marked.">retract</button>
+</form>
+{% endmacro %}
+
+{% macro entry_row(entry, token, back) %}
+<tr>
+  <td class="muted small">{{ entry.at | clock }}</td>
+  <td><span class="kind kind-{{ entry.kind }}"></span>{{ entry.label }}</td>
+  <td class="num">
+    {% if entry.kind == 'intake' or entry.kind == 'meal' %}{{ entry.amount | litres }}
+    {% elif entry.kind == 'weight' %}{{ entry.amount | pounds }}
+    {% elif entry.kind == 'activity' %}{{ entry.amount | litres }} sweat
+    {% elif entry.kind == 'void' %}&mdash;
+    {% else %}{{ entry.amount }}{% endif %}
+  </td>
+  <td class="muted small">{{ entry.source }}</td>
+  <td>{% if entry.kind != 'activity' %}{{ retract(token, entry.kind if entry.kind != 'weight' else 'body_weight', entry.row_id, back) }}{% endif %}</td>
+</tr>
+{% endmacro %}

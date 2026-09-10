@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Set up &middot; Hydration{% endblock %}
+{% block body %}
+<div class="card">
+  <h2>First run</h2>
+  <p class="sub">Choose a password. Everything here is behind it.</p>
+  <form method="post" action="/setup">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label class="field"><span>Password (at least eight characters)</span>
+      <input type="password" name="password" autocomplete="new-password" required autofocus>
+    </label>
+    <label class="field"><span>Again</span>
+      <input type="password" name="confirm" autocomplete="new-password" required>
+    </label>
+    <button type="submit" class="primary">Set password and continue</button>
+  </form>
+</div>
+{% endblock %}

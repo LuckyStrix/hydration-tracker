@@ -1,0 +1,266 @@
+# Hydration tracker -- Home Assistant package.
+#
+# Drop this file in `config/packages/` and make sure your configuration.yaml
+# has:
+#
+#   homeassistant:
+#     packages: !include_dir_named packages
+#
+# Then add two lines to `secrets.yaml`:
+#
+#   hydration_auth: "Bearer PASTE_THE_TOKEN_FROM_THE_SETTINGS_PAGE"
+#
+# Note that the word "Bearer" is part of the secret. Home Assistant will not
+# build that header by concatenation in every context, and keeping the whole
+# value in secrets.yaml is what keeps this file free of the token.
+#
+# Two places need your own URL:
+#
+#   1. `input_text.hydration_host` below -- the base URL. The rest_commands
+#      read it from there, so they never need editing.
+#   2. `rest:` -> `resource:` -- that one is polled on a timer rather than
+#      called from a script, so it cannot read a helper and needs the full
+#      status URL written out.
+
+# ---------------------------------------------------------------------------
+# Sending data to the tracker
+# ---------------------------------------------------------------------------
+
+rest_command:
+  hydration_log_drink:
+    url: "{{ states('input_text.hydration_host') }}/api/v1/intake"
+    method: post
+    content_type: "application/json"
+    headers:
+      authorization: !secret hydration_auth
+    payload: >-
+      {"beverage": "{{ beverage | default('Water') }}",
+       "volume_l": {{ volume_l | default(0.35) }},
+       "source": "hass"}
+
+  hydration_log_void:
+    url: "{{ states('input_text.hydration_host') }}/api/v1/void"
+    method: post
+    content_type: "application/json"
+    headers:
+      authorization: !secret hydration_auth
+    payload: >-
+      {"colour": {{ colour | default(3) }}, "source": "hass"}
+
+  hydration_log_weight:
+    url: "{{ states('input_text.hydration_host') }}/api/v1/weight"
+    method: post
+    content_type: "application/json"
+    headers:
+      authorization: !secret hydration_auth
+    payload: >-
+      {"mass_lb": {{ mass_lb }}, "context": "{{ context | default('morning') }}", "source": "hass"}
+
+  hydration_log_env:
+    url: "{{ states('input_text.hydration_host') }}/api/v1/env"
+    method: post
+    content_type: "application/json"
+    headers:
+      authorization: !secret hydration_auth
+    payload: >-
+      {"temp_f": {{ temp_f }}, "humidity": {{ humidity }},
+       "location": "{{ location | default('indoor') }}", "source": "hass"}
+
+  hydration_log_symptom:
+    url: "{{ states('input_text.hydration_host') }}/api/v1/symptom"
+    method: post
+    content_type: "application/json"
+    headers:
+      authorization: !secret hydration_auth
+    payload: >-
+      {"kind": "{{ kind }}", "severity": {{ severity | default(2) }}, "source": "hass"}
+
+
+# ---------------------------------------------------------------------------
+# Reading the plan back
+# ---------------------------------------------------------------------------
+
+rest:
+  # REPLACE this with your own host. It must be the full /api/v1/status URL.
+  - resource: "http://windows-pc.your-tailnet.ts.net:8080/api/v1/status"
+    scan_interval: 60
+    headers:
+      authorization: !secret hydration_auth
+    sensor:
+      # The single actionable line. This is the whole point of the integration:
+      # one sentence you can put on a dashboard or speak aloud.
+      - name: "Hydration plan"
+        unique_id: hydration_plan
+        icon: mdi:cup-water
+        value_template: "{{ value_json.headline }}"
+        json_attributes:
+          - status
+          - deficit_l
+          - deficit_pct
+          - next_dose_l
+          - next_dose_at
+          - sodium_mg
+          - sodium_gap_mg
+          - daily_intake_l
+          - daily_target_l
+          - daily_pct
+          - sweat_24h_l
+          - flags
+
+      - name: "Hydration deficit"
+        unique_id: hydration_deficit
+        icon: mdi:water-minus
+        unit_of_measurement: "L"
+        state_class: measurement
+        value_template: "{{ value_json.deficit_l }}"
+
+      - name: "Hydration status"
+        unique_id: hydration_status
+        icon: mdi:water-check
+        value_template: "{{ value_json.status }}"
+
+      - name: "Hydration drunk today"
+        unique_id: hydration_drunk_today
+        icon: mdi:cup
+        unit_of_measurement: "L"
+        state_class: total_increasing
+        value_template: "{{ value_json.daily_intake_l }}"
+
+      - name: "Hydration sodium gap"
+        unique_id: hydration_sodium_gap
+        icon: mdi:shaker-outline
+        unit_of_measurement: "mg"
+        state_class: measurement
+        value_template: "{{ value_json.sodium_gap_mg }}"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard controls
+# ---------------------------------------------------------------------------
+
+input_text:
+  hydration_host:
+    name: Hydration host
+    # Set this once from the UI, or hard-code your URL here. Kept as a helper
+    # so the rest_commands above need no editing.
+    initial: "http://windows-pc.your-tailnet.ts.net:8080"
+    max: 255
+
+input_number:
+  hydration_volume_l:
+    name: Volume
+    min: 0.05
+    max: 2.0
+    step: 0.05
+    unit_of_measurement: "L"
+    icon: mdi:cup-water
+
+input_select:
+  hydration_beverage:
+    name: Drink
+    options:
+      - Water
+      - Coffee
+      - Tea
+      - Milk
+      - Sports drink
+      - Electrolyte tab in water
+      - LMNT / high-sodium mix
+      - Juice
+      - Soda
+      - Beer
+    initial: Water
+    icon: mdi:bottle-soda-outline
+
+  hydration_urine_colour:
+    name: Urine colour
+    # The 8-point chart. 1 is nearly clear, 8 is dark amber.
+    options: ["1", "2", "3", "4", "5", "6", "7", "8"]
+    initial: "3"
+    icon: mdi:palette
+
+
+script:
+  hydration_submit_drink:
+    alias: Log the selected drink
+    sequence:
+      - service: rest_command.hydration_log_drink
+        data:
+          beverage: "{{ states('input_select.hydration_beverage') }}"
+          volume_l: "{{ states('input_number.hydration_volume_l') | float(0.35) }}"
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.hydration_plan
+
+  hydration_submit_void:
+    alias: Log the selected urine colour
+    sequence:
+      - service: rest_command.hydration_log_void
+        data:
+          colour: "{{ states('input_select.hydration_urine_colour') | int(3) }}"
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.hydration_plan
+
+  # Handy for an NFC tag on the fridge: one tap, half a litre of water, done.
+  hydration_quick_water:
+    alias: Log 0.5 L of water
+    sequence:
+      - service: rest_command.hydration_log_drink
+        data:
+          beverage: Water
+          volume_l: 0.5
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.hydration_plan
+
+
+# ---------------------------------------------------------------------------
+# The passive input: ambient conditions
+# ---------------------------------------------------------------------------
+
+automation:
+  - alias: Hydration - push ambient conditions
+    id: hydration_push_env
+    description: >-
+      Temperature and humidity drive both the baseline losses and the sweat
+      estimate. This is the highest-value thing Home Assistant contributes,
+      because it costs nothing and needs no attention.
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/15"
+      - platform: homeassistant
+        event: start
+    action:
+      - service: rest_command.hydration_log_env
+        data:
+          # REPLACE these two entity ids with your own sensors.
+          temp_f: "{{ states('sensor.living_room_temperature') | float(70) }}"
+          humidity: "{{ states('sensor.living_room_humidity') | float(45) }}"
+          location: indoor
+
+  - alias: Hydration - announce when a drink is due
+    id: hydration_announce
+    description: >-
+      Speaks only when the app escalates, and not at night. An assistant that
+      reads out a hydration plan every hour gets muted within a day.
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.hydration_status
+        to:
+          - drink_urgent
+          - slow_down
+    condition:
+      - condition: time
+        after: "08:00:00"
+        before: "21:30:00"
+    action:
+      - service: tts.speak
+        target:
+          # REPLACE with your own TTS entity.
+          entity_id: tts.piper
+        data:
+          media_player_entity_id: media_player.kitchen
+          message: "{{ states('sensor.hydration_plan') }}"

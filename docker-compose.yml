@@ -1,0 +1,36 @@
+services:
+  hydration:
+    build: .
+    container_name: hydration
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    env_file:
+      - .env
+    environment:
+      # The wall clock the app reads dates and bedtimes against. The profile's
+      # own time zone overrides this once set; this is the fallback.
+      TZ: ${TZ:-America/New_York}
+    volumes:
+      # The live database, in a NAMED VOLUME -- deliberately not a bind mount.
+      # Two reasons, and both bite in practice:
+      #   * On Docker Desktop, a bind mount crosses a filesystem translation
+      #     layer where SQLite's file locking is unreliable. A named volume is
+      #     a real Linux filesystem and behaves.
+      #   * Anything watching a host directory -- a backup agent, a
+      #     folder-syncing tool, an editor's indexer -- will eventually copy the
+      #     database mid-write and get a file that may not open.
+      # Backups reach the host the safe way instead, via `hydration backup`.
+      - hydration-data:/data
+      # Backups only. Written on demand with VACUUM INTO, so each one is
+      # consistent by construction and safe for anything to pick up.
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  hydration-data:

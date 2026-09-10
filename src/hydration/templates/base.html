@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Hydration{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+{% block head %}{% endblock %}
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="brand">Hydration <span>tracker</span></div>
+    <nav>
+      <a href="/" {% if nav == 'today.html' %}class="active"{% endif %}>Today</a>
+      <a href="/log" {% if nav == 'log.html' %}class="active"{% endif %}>Log</a>
+      <a href="/history" {% if nav == 'history.html' %}class="active"{% endif %}>History</a>
+      <a href="/activities" {% if nav == 'activities.html' %}class="active"{% endif %}>Activities</a>
+      <a href="/insights" {% if nav == 'insights.html' %}class="active"{% endif %}>Insights</a>
+      <a href="/settings" {% if nav == 'settings.html' %}class="active"{% endif %}>Settings</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  {% if flash %}
+    <div class="flash flash-{{ flash.kind }}">{{ flash.message }}</div>
+  {% endif %}
+  {% block body %}{% endblock %}
+
+  <footer class="foot">
+    Estimates, not diagnoses. This models population averages corrected by your own
+    readings; it is not medical advice and cannot see anything a doctor would.
+  </footer>
+</main>
+</body>
+</html>
