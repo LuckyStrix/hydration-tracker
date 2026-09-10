@@ -68,14 +68,36 @@ something giving health guidance.
 
 ## Running it
 
-Built for Docker Desktop on Windows, reached over Tailscale.
+Anywhere Docker runs. Developed against Docker Desktop on Windows and reached
+over Tailscale, but there is nothing host-specific in the image.
 
-```powershell
-copy .env.example .env      # then edit it
+```bash
+git clone https://github.com/LuckyStrix/hydration-tracker.git
+cd hydration-tracker
+cp .env.example .env          # copy .env.example .env on Windows
 docker compose up -d --build
 ```
 
-Open `http://<your-windows-host>:8080` and set a password.
+Then open `http://<host>:8080` and set a password. That is the whole setup —
+Garmin and Home Assistant are both optional and can be added later.
+
+To update:
+
+```bash
+git pull && docker compose up -d --build
+```
+
+The database is in a named volume, so it survives rebuilds.
+
+### Reaching it from elsewhere
+
+Over a tailnet, `http://<machine-name>:8080` works as-is. If you put TLS in
+front of it — `tailscale serve`, or any reverse proxy — set
+`HYDRATION_BEHIND_PROXY=1`, which turns on secure cookies and forwarded-header
+handling.
+
+Leave that off for plain HTTP. With it on, the browser drops the session cookie
+over HTTP and sign-in silently never sticks.
 
 ### Where the database lives, and why it matters
 
