@@ -64,6 +64,15 @@ CREATE TABLE IF NOT EXISTS profile (
     -- (`units.volume_to_ml`, which every entry path goes through).
     volume_entry_unit       TEXT    NOT NULL DEFAULT 'l',
 
+    -- The earliest local day the history and insights pages, and every
+    -- lookback window the ledger computes from 'now', will read back to.
+    -- Defaults to the day the profile was created (backfilled below) --
+    -- without a floor here, a freshly set-up install spends its first month
+    -- or three plotting the weeks before it existed as a real, alarming
+    -- deficit: the model has no events there and just free-runs insensible
+    -- loss across the empty stretch.
+    history_start_date      TEXT    NOT NULL DEFAULT '',
+
     created_at              TEXT    NOT NULL,
     updated_at              TEXT    NOT NULL
 );

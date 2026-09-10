@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import RedirectResponse
@@ -111,6 +112,7 @@ def settings_page(request: Request):
         request,
         "settings.html",
         row=row,
+        today=datetime.now(deps.profile_timezone(conn)).strftime("%Y-%m-%d"),
         mass_lb=units.kg_to_lb(row["body_mass_kg"]),
         beverages=service.list_beverages(conn, include_archived=True),
         tokens=security.list_tokens(conn),
@@ -182,14 +184,14 @@ def save_profile(
     default_temp_f: str = Form("70"),
     default_humidity_pct: float = Form(45.0),
     volume_entry_unit: str = Form("l"),
+    history_start_date: str = Form(""),
 ):
     pounds = units.parse_optional_float(mass_lb)
     if pounds is None:
         raise ValidationError("body weight is needed -- the whole model is scaled by it")
     if volume_entry_unit not in units.VOLUME_UNITS:
         raise ValidationError(f"{volume_entry_unit!r} is not a fluid unit this app knows")
-    service.save_profile(
-        deps.connection(),
+    fields = dict(
         display_name=display_name.strip() or "me",
         body_mass_kg=units.lb_to_kg(pounds),
         height_cm=float(units.parse_optional_float(height_cm) or 178.0),
@@ -207,6 +209,9 @@ def save_profile(
         default_humidity_pct=default_humidity_pct,
         volume_entry_unit=volume_entry_unit,
     )
+    if history_start_date.strip():
+        fields["history_start_date"] = history_start_date.strip()
+    service.save_profile(deps.connection(), **fields)
     return deps.redirect("/settings", "Profile saved.", "good")
 
 

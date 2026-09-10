@@ -78,6 +78,17 @@
     </div>
 
     <div class="row">
+      <label class="field"><span>History starts</span>
+        <input type="date" name="history_start_date" value="{{ row['history_start_date'] }}" max="{{ today }}" required>
+        <span class="small muted">
+          History and insights never look further back than this, no matter what range you pick.
+          Defaults to the day you set this up -- move it earlier only if you trust data from
+          before that.
+        </span>
+      </label>
+    </div>
+
+    <div class="row">
       <label class="field"><span>Absorption cap, mL/h</span>
         <input type="number" name="absorption_cap_ml_h" step="50" min="200" max="1600" value="{{ row['absorption_cap_ml_h'] }}"></label>
       <label class="field"><span>How far to trust a colour reading (0&ndash;1)</span>

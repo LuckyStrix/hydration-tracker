@@ -376,17 +376,28 @@ def history(request: Request, days: int = 14):
     days = max(1, min(int(days), 180))
 
     end = datetime.now(timezone.utc)
-    start = end - timedelta(days=days)
+    # Never earlier than this: a fresh install has no data before it existed,
+    # and a 30- or 90-day view over that empty stretch is what turns into the
+    # implausible "per day" figures and the alarming deficit line -- see
+    # `service.history_start_utc`.
+    floor = service.history_start_utc(conn)
+    start = max(end - timedelta(days=days), floor)
     timeline = service.timeline_for(conn, start=start, end=end)
     # `days` bars, not `days + 1`: the ledger runs a full `days` back, but the
     # bars are whole local days, and "the last 14 days" means today plus the
     # thirteen before it rather than a fourteenth stub at the far end.
-    summaries = reports.daily_summaries(conn, end - timedelta(days=days - 1), end, tz)
+    summaries = reports.daily_summaries(conn, max(end - timedelta(days=days - 1), floor), end, tz)
+    # The actual number of local days on the chart, once clamped -- dividing
+    # the totals by the requested `days` instead would understate a brand new
+    # week of good hydration as a trickle spread across a mostly nonexistent month.
+    span_days = len(summaries)
 
     return deps.render(
         request,
         "history.html",
         days=days,
+        span_days=span_days,
+        history_start=floor.astimezone(tz).strftime("%-d %b %Y"),
         ranges=(1, 3, 7, 14, 30, 90),
         profile=timeline.profile,
         summaries=summaries,

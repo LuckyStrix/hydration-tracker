@@ -44,7 +44,7 @@ PROFILE_FIELDS = {
     "sweat_calibration_n", "baseline_loss_scale", "feedback_n",
     "absorption_cap_ml_h", "food_water_ml_day",
     "caffeine_diuresis_ml_mg", "trust_urine", "default_temp_c", "default_humidity_pct",
-    "volume_entry_unit",
+    "volume_entry_unit", "history_start_date",
 }
 
 
@@ -91,6 +91,14 @@ def save_profile(connection: sqlite3.Connection, **fields) -> None:
             raise ValidationError(f"{fields['timezone']!r} is not a known time zone") from None
     if "body_mass_kg" in fields and not 20.0 < float(fields["body_mass_kg"]) < 400.0:
         raise ValidationError("body mass is outside any plausible range")
+    if "history_start_date" in fields:
+        try:
+            parsed = date.fromisoformat(fields["history_start_date"])
+        except ValueError:
+            raise ValidationError(f"{fields['history_start_date']!r} is not a date") from None
+        if parsed > datetime.now(timezone.utc).date():
+            raise ValidationError("history cannot start in the future")
+        fields["history_start_date"] = parsed.isoformat()
 
     assignments = ", ".join(f"{name} = :{name}" for name in fields)
     with db.transaction(connection):
@@ -809,6 +817,23 @@ def _conditions_at(
     return row["temp_c"], row["humidity_pct"]
 
 
+def history_start_utc(connection: sqlite3.Connection) -> datetime:
+    """The earliest instant any lookback window may reach.
+
+    Every read in this module computes its window as "now minus N days" with
+    no idea whether the tracker existed N days ago. Without a floor, a fresh
+    install's first 30- or 90-day view walks straight through the weeks before
+    it existed, where there is no event to work from -- the model just
+    free-runs insensible loss across the empty stretch and plots it as a real
+    deficit. `history_start_date` is set once (defaulting to the day the
+    profile was created) and edited from the settings page.
+    """
+    row = profile_row(connection)
+    raw = row["history_start_date"] or row["created_at"][:10]
+    local_midnight = datetime.combine(date.fromisoformat(raw), time.min, tzinfo=ZoneInfo(row["timezone"]))
+    return local_midnight.astimezone(timezone.utc)
+
+
 def timeline_for(
     connection: sqlite3.Connection,
     *,
@@ -820,6 +845,9 @@ def timeline_for(
     """`apply_feedback=False` is for the baseline fit, which must not read back
     its own influence."""
     profile = profile or load_profile(connection)
+    # Never past `end`: a floor moved forward after older feedback was already
+    # logged must not turn a valid backward-looking window into an inverted one.
+    start = min(max(start, history_start_utc(connection)), end)
     return B.simulate(
         profile,
         build_events(connection, start - timedelta(hours=12), end, include_feedback=apply_feedback),

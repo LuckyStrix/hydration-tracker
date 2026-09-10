@@ -166,6 +166,12 @@ MIGRATIONS: tuple[tuple[str, str, str, str | None], ...] = (
         """,
     ),
     ("profile", "volume_entry_unit", "TEXT NOT NULL DEFAULT 'l'", None),
+    (
+        "profile",
+        "history_start_date",
+        "TEXT NOT NULL DEFAULT ''",
+        "UPDATE profile SET history_start_date = substr(created_at, 1, 10) WHERE history_start_date = ''",
+    ),
 )
 
 
@@ -203,7 +209,8 @@ def _seed_profile(connection: sqlite3.Connection) -> None:
         return
     now = utcnow()
     connection.execute(
-        "INSERT INTO profile (id, created_at, updated_at) VALUES (1, ?, ?)", (now, now)
+        "INSERT INTO profile (id, created_at, updated_at, history_start_date) VALUES (1, ?, ?, ?)",
+        (now, now, now[:10]),
     )
 
 

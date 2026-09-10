@@ -10,15 +10,18 @@
       <a href="/history?days={{ r }}" {% if r == days %}class="on"{% endif %}>{{ r }} day{{ 's' if r > 1 }}</a>
     {% endfor %}
   </div>
+  {% if span_days < days %}
+  <p class="small muted">History starts {{ history_start }} -- showing {{ span_days }} day{{ 's' if span_days > 1 }}.</p>
+  {% endif %}
 </div>
 
 <div class="tiles">
   <div class="tile"><div class="label">Drunk</div><div class="value">{{ totals.intake_ml | litres }}</div>
-    <div class="foot">{{ (totals.intake_ml / days) | litres }} per day</div></div>
+    <div class="foot">{{ (totals.intake_ml / span_days) | litres }} per day</div></div>
   <div class="tile"><div class="label">Sweated</div><div class="value">{{ totals.sweat_ml | litres }}</div>
-    <div class="foot">{{ (totals.sweat_ml / days) | litres }} per day</div></div>
+    <div class="foot">{{ (totals.sweat_ml / span_days) | litres }} per day</div></div>
   <div class="tile"><div class="label">Colour checks</div><div class="value">{{ totals.voids }}</div>
-    <div class="foot">{{ (totals.voids / days) | round(1) }} per day</div></div>
+    <div class="foot">{{ (totals.voids / span_days) | round(1) }} per day</div></div>
   <div class="tile"><div class="label">Sodium gap</div><div class="value">{{ totals.sodium_gap_mg | round | int }} mg</div>
     <div class="foot">sweat losses not replaced</div></div>
 </div>
