@@ -93,6 +93,7 @@ def today(request: Request):
 
     start_of_day = datetime.combine(now.astimezone(tz).date(), datetime.min.time(), tzinfo=tz)
     entries = reports.timeline_entries(conn, start_of_day.astimezone(timezone.utc), now)
+    daily_intake_ml = reports.intake_today_ml(conn, tz, now)
 
     return deps.render(
         request,
@@ -107,8 +108,9 @@ def today(request: Request):
         deficit_chart=charts.deficit_chart(
             timeline, timeline.corrections, tz, body_mass_kg=timeline.profile.body_mass_kg
         ),
+        daily_intake_ml=daily_intake_ml,
         daily_pct=min(
-            100, round(100 * plan.daily_intake_ml / plan.daily_target_ml) if plan.daily_target_ml else 0
+            100, round(100 * daily_intake_ml / plan.daily_target_ml) if plan.daily_target_ml else 0
         ),
         sweat_24h_ml=timeline.delta("sweat_ml", 24.0),
         gauge=_gauge(plan),

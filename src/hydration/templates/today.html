@@ -56,7 +56,7 @@
 <div class="tiles">
   <div class="tile">
     <div class="label">Drunk today</div>
-    <div class="value">{{ plan.daily_intake_ml | litres }}</div>
+    <div class="value">{{ daily_intake_ml | litres }}</div>
     <div class="foot">of {{ plan.daily_target_ml | litres }} target</div>
     {# Width comes from a class, not a style attribute: the CSP has no
        'unsafe-inline' for styles, so an inline width would be dropped and every
