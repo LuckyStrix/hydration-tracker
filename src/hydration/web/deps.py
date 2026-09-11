@@ -48,6 +48,18 @@ def profile_timezone(conn: sqlite3.Connection) -> ZoneInfo:
         return ZoneInfo("UTC")
 
 
+def entry_unit(conn: sqlite3.Connection) -> str:
+    """Which unit the fluid entry boxes start in.
+
+    Read here rather than passed by each route because every page with a form
+    on it needs it and forgetting one would silently offer litres to somebody
+    who thinks in ounces.
+    """
+    row = conn.execute("SELECT volume_entry_unit FROM profile WHERE id = 1").fetchone()
+    unit = row["volume_entry_unit"] if row else "l"
+    return unit if unit in units.VOLUME_UNITS else "l"
+
+
 # -- templates -------------------------------------------------------------
 
 def _make_environment() -> Environment:
@@ -150,6 +162,7 @@ def render(request: Request, name: str, **context) -> HTMLResponse:
         csrf_token=security.csrf_token_for(session_id) if session_id else "",
         flash=_read_flash(request),
         nav=name,
+        entry_unit=entry_unit(conn),
         **context,
     )
     response = HTMLResponse(body)

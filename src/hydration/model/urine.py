@@ -88,6 +88,10 @@ def colour_to_deficit_pct(colour: int, *, is_first_morning: bool = False) -> flo
 def confidence_for(ctx: VoidContext) -> tuple[float, list[str]]:
     """How much this particular sample can be trusted, and why.
 
+    The `why` is not a debug string: it is rendered as the tooltip on every
+    correction marker in the charts, so it is worded the way the rest of the
+    site is -- a reading, not the thing it was read from.
+
     The rules are checked worst-first and the lowest applicable confidence
     wins, because these compromise a reading rather than average out: a pale
     sample that is *both* twenty minutes after a litre of water *and* the first
@@ -98,14 +102,14 @@ def confidence_for(ctx: VoidContext) -> tuple[float, list[str]]:
 
     since_vitamin = ctx.minutes_since_multivitamin
     if since_vitamin is not None and since_vitamin <= MULTIVITAMIN_WINDOW_MIN:
-        candidates.append((0.10, "riboflavin from a supplement colours urine regardless of hydration"))
+        candidates.append((0.10, "riboflavin from a supplement colours the sample regardless of hydration"))
 
     since_drink = ctx.minutes_since_significant_intake
     if since_drink is not None and since_drink <= DILUTION_WINDOW_MIN:
         candidates.append((0.15, f"only {since_drink:.0f} min after a large drink -- diluted, not informative"))
 
     if ctx.is_first_morning:
-        candidates.append((0.35, "first void of the day is concentrated overnight by design"))
+        candidates.append((0.35, "first reading of the day is concentrated overnight by design"))
 
     since_exercise = ctx.minutes_since_exercise
     if since_exercise is not None and since_exercise <= POST_EXERCISE_WINDOW_MIN:
@@ -113,11 +117,11 @@ def confidence_for(ctx: VoidContext) -> tuple[float, list[str]]:
 
     since_void = ctx.minutes_since_previous_void
     if since_void is not None and since_void >= STALE_SAMPLE_MIN:
-        candidates.append((0.50, f"{since_void / 60:.1f} h since the last void -- integrates too long a window"))
+        candidates.append((0.50, f"{since_void / 60:.1f} h since the previous reading -- integrates too long a window"))
 
     if not candidates:
         if since_void is not None and since_void <= FRESH_SAMPLE_MIN:
-            reasons.append("recent previous void, so this reflects current kidney output")
+            reasons.append("a recent previous reading, so this one reflects current output")
             return 0.90, reasons
         reasons.append("unremarkable timing")
         return 0.75, reasons
