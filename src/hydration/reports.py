@@ -100,6 +100,25 @@ def daily_summaries(
     return [buckets[key] for key in sorted(buckets)]
 
 
+def intake_today_ml(connection: sqlite3.Connection, tz: ZoneInfo, now: datetime) -> float:
+    """Millilitres logged since local midnight, for a tile actually labelled 'today'.
+
+    Deliberately not `timeline.delta("intake_ml", 24.0)`: the model only knows
+    elapsed hours, not local calendar days, so its "last 24h" and "since local
+    midnight" diverge every time some of today's drinking happened yesterday
+    (or none of it has happened yet) -- e.g. at 6am the rolling window is still
+    full of last night's intake, which is not what 'drunk today' means to a
+    person reading the homepage.
+    """
+    start_of_day = datetime.combine(now.astimezone(tz).date(), datetime.min.time(), tzinfo=tz)
+    lo, hi = db.to_iso(start_of_day.astimezone(timezone.utc)), db.to_iso(now)
+    row = connection.execute(
+        "SELECT COALESCE(SUM(volume_ml), 0.0) AS total FROM intake WHERE voided_at IS NULL AND at BETWEEN ? AND ?",
+        (lo, hi),
+    ).fetchone()
+    return row["total"]
+
+
 def void_points(connection: sqlite3.Connection, start: datetime, end: datetime, tz: ZoneInfo) -> list[dict]:
     """Voids shaped for the colour chart, carrying why each was trusted."""
     events = service.build_events(connection, start - timedelta(hours=12), end)
@@ -259,7 +278,7 @@ def model_bias(connection: sqlite3.Connection, days: int = 30) -> dict:
             if abs(mean) < 250
             else (
                 f"The ledger reads about {abs(mean) / 1000:.2f} L {'drier' if mean > 0 else 'wetter'} "
-                f"than urine and weight suggest. Persistent bias in one direction means a model "
+                f"than colour and weight suggest. Persistent bias in one direction means a model "
                 f"constant does not suit you -- see docs/tuning.md."
             )
         ),

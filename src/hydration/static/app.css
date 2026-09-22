@@ -272,6 +272,28 @@ nav a.active { color: var(--ink); border-bottom-color: var(--series-1); font-wei
 .uc-5 { background: #e5c93c; } .uc-6 { background: #d9ab24; }
 .uc-7 { background: #c68a17; } .uc-8 { background: #a8630f; }
 
+/* A folded section. Everything that reads as more than hydration to somebody
+ * glancing at the screen lives behind one of these: the swatch row and the
+ * colour chart are both recognisable at a distance, and no arrangement of
+ * wording hides a block of amber. <details> is the whole mechanism -- there is
+ * no JavaScript here to build anything else with, and it needs none. */
+details.discreet { margin-top: 4px; }
+details.discreet > summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer; width: fit-content;
+  padding: 6px 10px; border-radius: var(--radius);
+  font-size: 13px; color: var(--ink-muted);
+  border: 1px solid var(--border); background: var(--surface-sunk);
+  list-style: none;
+}
+details.discreet > summary::-webkit-details-marker { display: none; }
+/* The marker is drawn rather than inherited so it points the same way in every
+ * browser, and so the closed state carries no colour of its own. */
+details.discreet > summary::before { content: "\203A"; display: inline-block; font-size: 15px; }
+details.discreet[open] > summary::before { transform: rotate(90deg); }
+details.discreet > summary:hover { color: var(--ink); }
+details.discreet > *:not(summary) { margin-top: 12px; }
+
 /* -- forms -------------------------------------------------------------- */
 
 form { margin: 0; }
@@ -293,6 +315,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline-offset: 1px;
   border-color: var(--series-1);
 }
+/* An amount and its unit read as one control, and the unit takes only the
+ * width of the word: given equal shares the select swallows half the field and
+ * the number it belongs to gets squeezed. */
+.amount { display: flex; gap: 6px; align-items: stretch; }
+.amount input { flex: 1 1 auto; min-width: 0; }
+.amount select { flex: 0 0 auto; width: auto; }
+
 .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: flex-end; }
 .row > * { flex: 1 1 140px; }
 

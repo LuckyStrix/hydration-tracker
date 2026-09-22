@@ -242,6 +242,32 @@ def test_environment_readings_reach_the_ledger(tz_conn):
     assert hot.final.insensible_ml > cool.final.insensible_ml * 1.1
 
 
+# -- history start -----------------------------------------------------------
+
+def test_the_ledger_never_reads_before_the_history_start_date(tz_conn):
+    """A lookback window is normally computed from 'now', with no idea whether
+    the tracker existed that far back. Without a floor it walks straight
+    through the empty weeks before signup and the model free-runs insensible
+    loss across the whole stretch -- see `service.history_start_utc`."""
+    service.save_profile(tz_conn, history_start_date="2026-06-16")
+    floor = service.history_start_utc(tz_conn)
+
+    timeline = service.timeline_for(tz_conn, start=at(day=1), end=at(day=17))
+
+    assert timeline.samples[0].at == floor
+    assert all(sample.at >= floor for sample in timeline.samples)
+
+
+def test_a_floor_moved_past_the_window_end_does_not_invert_it(tz_conn):
+    """Moving the floor forward after older events are already logged must not
+    turn a valid backward-looking window into one where start is after end."""
+    service.save_profile(tz_conn, history_start_date="2026-07-01")
+
+    timeline = service.timeline_for(tz_conn, start=at(day=1), end=at(day=15))
+
+    assert timeline.samples[0].at == at(day=15)
+
+
 def test_the_weight_trend_is_seeded_from_history_before_the_window(tz_conn):
     """Otherwise the first morning weight inside a window sets the trend to
     itself, and the observer is silently dead for a day."""

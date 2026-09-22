@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_macros.html" import csrf, colour_picker %}
+{% from "_macros.html" import csrf, colour_picker, volume_field %}
 {% block title %}Log &middot; Hydration{% endblock %}
 {% block body %}
 
@@ -15,9 +15,7 @@
         </select>
       </label>
       <div class="row">
-        <label class="field"><span>Litres</span>
-          <input type="number" name="volume_l" step="0.05" min="0.05" max="5" value="0.35" required>
-        </label>
+        {{ volume_field("Amount", "volume", entry_unit, value=drink_default, required=true) }}
         <label class="field"><span>Sodium, mg (optional)</span>
           <input type="number" name="sodium_mg" step="10" min="0" placeholder="from the catalogue">
         </label>
@@ -31,30 +29,31 @@
   </div>
 
   <div class="card">
-    <h2>Bathroom</h2>
-    <p class="sub">
-      Timing changes what a colour means, so log when it happened. A sample soon
-      after a big drink, or the first of the morning, counts for much less.
-    </p>
-    <form method="post" action="/log/void">
-      {{ csrf(csrf_token) }}
-      {{ colour_picker() }}
-      <div class="row">
-        <label class="field"><span>Volume, litres (optional)</span>
-          <input type="number" name="volume_l" step="0.05" min="0" placeholder="if you measured">
+    <h2>Colour check</h2>
+    <details class="discreet">
+      <summary>Open the chart</summary>
+      <p class="sub">
+        Timing changes what a colour means, so log when it happened. A reading soon
+        after a big drink, or the first of the morning, counts for much less.
+      </p>
+      <form method="post" action="/log/void">
+        {{ csrf(csrf_token) }}
+        {{ colour_picker() }}
+        <div class="row">
+          {{ volume_field("Volume (optional)", "volume", entry_unit, placeholder="if you measured") }}
+          <label class="field"><span>Urgency</span>
+            <select name="urgency">
+              <option value="">&mdash;</option>
+              {% for u in range(1, 6) %}<option value="{{ u }}">{{ u }}</option>{% endfor %}
+            </select>
+          </label>
+        </div>
+        <label class="field"><span>When</span>
+          <input type="datetime-local" name="at" value="{{ now_local }}">
         </label>
-        <label class="field"><span>Urgency</span>
-          <select name="urgency">
-            <option value="">&mdash;</option>
-            {% for u in range(1, 6) %}<option value="{{ u }}">{{ u }}</option>{% endfor %}
-          </select>
-        </label>
-      </div>
-      <label class="field"><span>When</span>
-        <input type="datetime-local" name="at" value="{{ now_local }}">
-      </label>
-      <button type="submit" class="primary">Log void</button>
-    </form>
+        <button type="submit" class="primary">Save reading</button>
+      </form>
+    </details>
   </div>
 
   <div class="card">
@@ -95,9 +94,7 @@
       {{ csrf(csrf_token) }}
       <label class="field"><span>What</span><input type="text" name="label" placeholder="e.g. ramen"></label>
       <div class="row">
-        <label class="field"><span>Water content, litres</span>
-          <input type="number" name="water_l" step="0.05" min="0" value="0.30">
-        </label>
+        {{ volume_field("Water content", "water", entry_unit, value=meal_water_default) }}
         <label class="field"><span>Sodium, mg</span>
           <input type="number" name="sodium_mg" step="50" min="0" value="800">
         </label>
@@ -144,7 +141,7 @@
       </div>
       <div class="row">
         <label class="field"><span>Calories</span><input type="number" name="kcal" step="10" min="0"></label>
-        <label class="field"><span>Sweat, litres</span><input type="number" name="sweat_l" step="0.1" min="0" placeholder="estimated"></label>
+        {{ volume_field("Sweat", "sweat", entry_unit, placeholder="estimated") }}
       </div>
       <button type="submit" class="primary">Record activity</button>
     </form>

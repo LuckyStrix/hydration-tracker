@@ -158,6 +158,30 @@ def test_a_database_that_took_the_backfill_less_migration_is_repaired():
     connection.close()
 
 
+def test_a_fresh_profile_seeds_the_history_start_date_to_today():
+    connection = db.connect(":memory:")
+    db.init(connection)
+    row = connection.execute("SELECT created_at, history_start_date FROM profile").fetchone()
+    assert row["history_start_date"] == row["created_at"][:10]
+    connection.close()
+
+
+def test_a_database_missing_history_start_date_backfills_it_from_created_at():
+    """The column arrives defaulted to the empty string, which `service.
+    history_start_utc` would otherwise have to special-case forever."""
+    connection = db.connect(":memory:")
+    db.init(connection)
+    connection.execute(
+        "UPDATE profile SET created_at = '2024-03-02T00:00:00+00:00', history_start_date = ''"
+    )
+
+    db.init(connection)
+
+    row = connection.execute("SELECT history_start_date FROM profile").fetchone()
+    assert row["history_start_date"] == "2024-03-02"
+    connection.close()
+
+
 def test_the_backfill_leaves_a_real_ended_at_alone():
     connection = db.connect(":memory:")
     db.init(connection)

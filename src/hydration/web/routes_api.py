@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
-from .. import db, service, units
+from .. import db, reports, service, units
 from ..errors import HydrationError, NotFound, ValidationError
 from . import deps
 
@@ -233,8 +233,10 @@ def status(request: Request):
     """
     conn = deps.connection()
     now = datetime.now(timezone.utc)
+    tz = deps.profile_timezone(conn)
     timeline, plan = service.current_state(conn, now=now)
     service.record_recommendation(conn, plan)
+    daily_intake_ml = reports.intake_today_ml(conn, tz, now)
 
     def rounded(value: float, places: int = 2) -> float:
         # `or 0.0` collapses negative zero. Python rounds -0.001 to -0.0, which
@@ -253,10 +255,10 @@ def status(request: Request):
             "planned_total_l": rounded(plan.total_planned_ml / 1000),
             "sodium_mg": round(plan.sodium.recommended_mg),
             "sodium_gap_mg": round(plan.sodium.gap_mg),
-            "daily_intake_l": rounded(plan.daily_intake_ml / 1000),
+            "daily_intake_l": rounded(daily_intake_ml / 1000),
             "daily_target_l": rounded(plan.daily_target_ml / 1000),
             "daily_pct": round(
-                100 * plan.daily_intake_ml / plan.daily_target_ml if plan.daily_target_ml else 0
+                100 * daily_intake_ml / plan.daily_target_ml if plan.daily_target_ml else 0
             ),
             "sweat_24h_l": rounded(timeline.delta("sweat_ml", 24.0) / 1000),
             # So a dashboard can show a guess differently from a checked figure.

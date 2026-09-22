@@ -35,6 +35,51 @@ def format_l(ml: float | None, places: int = 2) -> str:
     return f"{ml / ML_PER_L:.{places}f} L"
 
 
+VOLUME_UNITS = ("l", "oz")
+"""The units a fluid amount may be typed in. Litres is what the app displays;
+ounces is what the bottles in the cupboard are marked in, and a person who has
+to convert in their head before every entry stops making entries."""
+
+
+def fl_oz_to_ml(fl_oz: float | None) -> float | None:
+    """US fluid ounces to millilitres.
+
+    Bottles are sold in ounces and the app speaks litres, so the number on the
+    label converts here like every other human-facing unit rather than being
+    pre-divided into a constant somewhere else.
+    """
+    return None if fl_oz is None else fl_oz * ML_PER_FL_OZ
+
+
+def ml_to_fl_oz(ml: float | None) -> float | None:
+    return None if ml is None else ml / ML_PER_FL_OZ
+
+
+def volume_to_ml(amount: float | None, unit: str) -> float | None:
+    """A typed fluid amount, in whichever unit it was typed, as millilitres.
+
+    The unit travels with the number from the form that collected it rather
+    than being looked up from the profile here: the box on screen says what it
+    is, and a preference read a second time is how a 26 becomes 26 litres.
+    """
+    if amount is None:
+        return None
+    if unit == "l":
+        return l_to_ml(amount)
+    if unit == "oz":
+        return fl_oz_to_ml(amount)
+    from .errors import ValidationError
+
+    raise ValidationError(f"{unit!r} is not a fluid unit this app knows")
+
+
+def volume_from_ml(ml: float | None, unit: str) -> float | None:
+    """The inverse, for putting a sensible default in an entry box."""
+    if ml is None:
+        return None
+    return ml_to_fl_oz(ml) if unit == "oz" else ml_to_l(ml)
+
+
 # -- mass ------------------------------------------------------------------
 
 def kg_to_lb(kg: float | None) -> float | None:

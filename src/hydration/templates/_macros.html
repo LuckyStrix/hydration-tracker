@@ -1,5 +1,23 @@
 {% macro csrf(token) %}<input type="hidden" name="csrf_token" value="{{ token }}">{% endmacro %}
 
+{% macro volume_field(label, name, unit, value='', placeholder='', required=false) %}
+{# An amount and the unit it was typed in, which travel together as one field.
+   `step` and `min` are deliberately loose: the browser validates against the
+   unit the box loaded with, and somebody who switches the select to litres and
+   types 0.35 must not be stopped by a minimum meant for ounces. The range that
+   actually matters is checked server-side, where it knows the millilitres. #}
+<label class="field"><span>{{ label }}</span>
+  <span class="amount">
+    <input type="number" name="{{ name }}" step="0.01" min="0.01" value="{{ value }}"
+           placeholder="{{ placeholder }}" {% if required %}required{% endif %}>
+    <select name="{{ name }}_unit" title="Units">
+      <option value="l" {% if unit == 'l' %}selected{% endif %}>L</option>
+      <option value="oz" {% if unit == 'oz' %}selected{% endif %}>oz</option>
+    </select>
+  </span>
+</label>
+{% endmacro %}
+
 {% macro colour_picker(selected=none) %}
 {# The chart itself, as the input. A dropdown of numbers would make you
    translate twice: swatch to number in your head, number to meaning in the

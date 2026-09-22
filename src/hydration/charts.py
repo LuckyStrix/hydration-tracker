@@ -136,6 +136,14 @@ def _empty(box: Box, message: str) -> str:
 
 # -- the deficit chart -----------------------------------------------------
 
+CORRECTION_NAMES = {"urine": "colour", "weight": "weight", "feedback": "how the day felt"}
+"""What each kind of correction is called on screen.
+
+The stored kind is the model's word for it and stays as it is; this is the
+presentation layer, which is where the site's own vocabulary belongs.
+"""
+
+
 def deficit_chart(timeline, corrections, tz: ZoneInfo, *, body_mass_kg: float) -> str:
     """Body water over time, with the moments an observation corrected it.
 
@@ -205,7 +213,8 @@ def deficit_chart(timeline, corrections, tz: ZoneInfo, *, body_mass_kg: float) -
         blended_pct = correction.blended_ml / 1000.0 / body_mass_kg * 100.0
         css = "mark-urine" if correction.kind == "urine" else "mark-weight"
         tip = (
-            f"{correction.kind}: ledger said {correction.ledger_ml / 1000:+.2f} L, "
+            f"{CORRECTION_NAMES.get(correction.kind, correction.kind)}: "
+            f"ledger said {correction.ledger_ml / 1000:+.2f} L, "
             f"observation said {correction.observed_ml / 1000:+.2f} L, "
             f"settled at {correction.blended_ml / 1000:+.2f} L "
             f"(confidence {correction.confidence:.0%}). "
@@ -351,7 +360,7 @@ def urine_chart(voids: list[dict], tz: ZoneInfo, start: datetime, end: datetime)
     """
     box = _box(height=200)
     if not voids:
-        return _empty(box, "No voids logged yet")
+        return _empty(box, "No colour readings logged yet")
 
     span = max((end - start).total_seconds(), 1.0)
 
@@ -361,7 +370,7 @@ def urine_chart(voids: list[dict], tz: ZoneInfo, start: datetime, end: datetime)
     def y_of(colour: float) -> float:
         return box.top + (colour - 0.5) / 8.0 * box.inner_h
 
-    parts = _open(box, "Urine colour over time")
+    parts = _open(box, "Colour readings over time")
     y_ticks = [(y_of(colour), str(colour)) for colour in range(1, 9)]
     x_ticks = [(x_of(moment.astimezone(timezone.utc)), label) for moment, label in _time_ticks(start, end, tz)]
     parts += _axes(box, y_ticks, x_ticks)

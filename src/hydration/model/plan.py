@@ -355,10 +355,10 @@ def _headline(
         return overdrink.message
 
     if confidence.is_stale:
-        # Ask for the cheapest thing that would fix it. A bathroom visit takes
+        # Ask for the cheapest thing that would fix it. A colour check takes
         # one tap and re-anchors the whole estimate.
         return (
-            "Not enough recent data to say. Log a bathroom visit or this morning's "
+            "Not enough recent data to say. Log a colour check or this morning's "
             "weight and I can tell you where you stand."
         )
 
@@ -423,12 +423,13 @@ def _medical_flags(
         )
     if hours_since_last_void is not None and hours_since_last_void >= k.NO_VOID_FLAG_H:
         flags.append(
-            f"No urine logged for {hours_since_last_void:.0f} hours. If that is accurate and you "
-            f"feel unwell, it needs attention rather than another glass of water."
+            f"No colour check for {hours_since_last_void:.0f} hours. If that is the day rather "
+            f"than the log, and you feel unwell, it needs attention rather than another glass "
+            f"of water."
         )
     if recent_dark_voids >= 3:
         flags.append(
-            "Several very dark voids in a row. If drinking normally has not shifted it, or the "
-            "colour is red, brown or tea-like, get it looked at -- that is not dehydration."
+            "Several very dark readings in a row. If drinking normally has not shifted it, or "
+            "the colour is red, brown or tea-like, get it looked at -- that is not dehydration."
         )
     return flags

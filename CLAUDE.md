@@ -74,12 +74,31 @@ quietly wrong, which is worse. So:
   local time. The conversion happens in `units.py` and the Jinja filters in
   `web/deps.py`, and nowhere else. A conversion that leaks inward is how a column
   ends up holding a mix of both with no way to tell which is which.
+- **An entry box carries its unit with it.** A fluid amount is typed in litres
+  or ounces, the form posts `volume` and `volume_unit` as a pair, and
+  `units.volume_to_ml` is the only thing that turns the pair into millilitres.
+  `profile.volume_entry_unit` decides which unit a box *opens* in and nothing
+  else -- reading it again at the point of conversion is how a 26 becomes 26
+  litres. The input's own `max` cannot police the range either, because the
+  browser applies it against whichever unit the box loaded with, so
+  `routes_ui._volume_ml` does.
 - **Nothing is deleted.** Corrections set `voided_at` and insert a new row. A
   health log you can silently rewrite is one you cannot trust later.
 - **No JavaScript, anywhere.** The CSP is `script-src 'none'`. Charts are
   server-rendered SVG built in `charts.py`; hover tooltips are `<title>`
   children, which browsers show natively. No `style=` attributes either — the
   CSP drops them, which is why meter widths are classes (`.w-45`).
+- **The site says hydration and nothing else.** Nothing rendered anywhere may
+  read as more than that to somebody glancing over a shoulder: a colour reading
+  is a "colour check", never a void, urine or a bathroom, and the two places
+  that draw the colour scale -- the swatch picker on Today and the chart on
+  History -- sit folded inside `<details class="discreet">`, because no wording
+  hides a block of amber. The stored `kind` is still `"urine"` and the route is
+  still `/log/void`; this is a presentation rule, and `charts.CORRECTION_NAMES`
+  is where the two vocabularies meet. The `why` strings in `model/urine.py` are
+  rendered as chart tooltips, so they follow it too. Covered by
+  `test_the_pages_read_as_a_hydration_tracker_and_nothing_else`, which reads the
+  rendered text rather than the markup.
 - **Chart colour lives in `app.css`, not in `charts.py`.** Marks carry class
   names; the stylesheet themes them. One render is correct in light and dark.
   The palette passes the colourblind-separation gates — re-run the validator
